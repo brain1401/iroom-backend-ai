@@ -1,0 +1,82 @@
+[project]
+name = "iroom-backend-ai"
+version = "0.1.0"
+description = "AI backend for iRoom application using LangServe"
+authors = [{ name = "Your Name", email = "you@example.com" }]
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+  "uvicorn>=0.23.2",
+  "langserve[server]>=0.3.0",
+  "pydantic>=2.11.0",
+  "fastapi>=0.104.0",
+  "httpx>=0.24.0",
+  "langchain-google-genai>=2.0.0",
+  "python-dotenv>=1.1.1",
+  "slowapi>=0.1.9",
+  "structlog>=23.0.0",
+  "pydantic-settings>=2.0.0",
+  "packaging>=23.0",
+  "redis>=5.0.0",
+  "tenacity>=8.0.0",
+  "wrapt<1.16",
+]
+
+[project.optional-dependencies]
+dev = [
+  "langchain-cli>=0.0.15",
+  "pytest>=7.0.0",
+  "ruff>=0.1.0",
+  "black>=23.0.0",
+  "httpx>=0.24.0",
+]
+
+[project.scripts]
+start = "app.server:main"
+dev = "app.server:dev_server"
+serve = "app.server:prod_server"
+test = "app.scripts:test"
+lint = "app.scripts:lint"
+format = "app.scripts:format_code"
+typecheck = "app.scripts:typecheck"
+install = "app.scripts:install"
+check = "app.scripts:check"
+
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = [
+  "black>=25.1.0",
+  "langchain-cli>=0.0.15",
+  "basedpyright>=1.31.2",
+  "pytest>=8.4.1",
+  "ruff>=0.12.9",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.basedpyright]
+# 기본 설정
+include = ["app"]
+exclude = [
+  "**/__pycache__",
+  "**/.pytest_cache",
+  "**/node_modules",
+  "**/.venv",
+  "**/venv",
+  "**/.git",
+]
+
+pythonVersion = "3.13"
+verboseOutput = true
+
+# 엄격도 7/10 설정 - 실용적이면서도 강력한 타입 체킹
+typeCheckingMode = "standard"

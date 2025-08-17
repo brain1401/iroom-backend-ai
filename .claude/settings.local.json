@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv:*)",
+      "mcp__ide__executeCode",
+      "Bash(dir)",
+      "Bash(dir:*)",
+      "WebSearch",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__get-library-docs",
+      "mcp__sequential-thinking__sequentialthinking",
+      "Bash(mkdir:*)",
+      "Bash(python -m pip:*)",
+      "Bash(python:*)",
+      "Bash(curl:*)",
+      "Bash(.venv_newScriptsactivate)",
+      "Bash(pip install:*)",
+      "Bash(source:*)",
+      "Bash(.venv/Scripts/python.exe -m pip list:*)",
+      "Bash(rmdir:*)",
+      "Bash(rm:*)",
+      "mcp__ide__getDiagnostics",
+      "Bash(pip index versions:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
