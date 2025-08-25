@@ -39,15 +39,13 @@ def install():
 def typecheck():
     """basedpyright를 사용하여 타입 체킹"""
     print("🔍 basedpyright로 타입 체킹 중...")
-    result = subprocess.run(
-        [sys.executable, "-m", "basedpyright"], cwd=os.getcwd()
-    )
-    
+    result = subprocess.run([sys.executable, "-m", "basedpyright"], cwd=os.getcwd())
+
     if result.returncode == 0:
         print("✅ 타입 체킹 완료!")
     else:
         print("❌ 타입 오류 발견")
-    
+
     return result
 
 
@@ -62,9 +60,11 @@ def check():
     print("\n🧪 테스트 실행 중...")
     test_result = test()
 
-    if (lint_result.returncode == 0 and 
-        type_result.returncode == 0 and 
-        test_result.returncode == 0):
+    if (
+        lint_result.returncode == 0
+        and type_result.returncode == 0
+        and test_result.returncode == 0
+    ):
         print("\n✅ 모든 검사 통과!")
         return 0
     else:

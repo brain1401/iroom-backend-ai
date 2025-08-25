@@ -13,7 +13,7 @@ from app.config.settings import Settings
 def setup_cors(app: FastAPI, settings: Settings) -> None:
     """
     Configure CORS middleware for the FastAPI application.
-    
+
     Args:
         app: FastAPI application instance
         settings: Application settings
