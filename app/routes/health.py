@@ -1,8 +1,18 @@
 """
-Health Check Routes
+헬스체크 라우트
 
-Provides comprehensive health monitoring endpoints for the application.
-Includes basic health, readiness, and liveness probes for Kubernetes deployments.
+애플리케이션 상태 모니터링용 포괄적 헬스체크 엔드포인트 제공
+
+주요 기능:
+- 기본 상태 확인 (/health)
+- 준비 상태 확인 (/health/ready) - Kubernetes readiness probe
+- 생존 상태 확인 (/health/live) - Kubernetes liveness probe
+- 메트릭 엔드포인트 (/health/metrics)
+
+Kubernetes 배포 지원:
+- 종속성 확인 (Gemini API, Redis)
+- 서비스 준비 상태 검증
+- 애플리케이션 생존 상태 모니터링
 """
 
 import time
@@ -15,7 +25,8 @@ from app.config.settings import Settings, get_settings
 
 
 class HealthResponse(BaseModel):
-    """Health check response model."""
+    """헬스체크 응답 모델"""
+
     status: str
     timestamp: str
     version: str
@@ -24,10 +35,28 @@ class HealthResponse(BaseModel):
 
 
 class ReadinessResponse(BaseModel):
-    """Readiness check response model."""
+    """준비 상태 체크 응답 모델"""
+
     ready: bool
     checks: dict[str, bool]
     timestamp: str
+
+
+class LivenessResponse(BaseModel):
+    """생존 상태 체크 응답 모델"""
+
+    status: str
+    timestamp: str
+    uptime_seconds: float
+
+
+class MetricsResponse(BaseModel):
+    """메트릭 응답 모델"""
+
+    uptime_seconds: float
+    timestamp: str
+    version: str
+    config: dict[str, object]
 
 
 # Track application start time
@@ -35,19 +64,23 @@ _start_time = time.time()
 
 
 def get_uptime() -> float:
-    """Get application uptime in seconds."""
+    """애플리케이션 업타임 계산 (초 단위)"""
     return time.time() - _start_time
 
 
 async def check_gemini_api_health(settings: Settings) -> bool:
     """
-    Check if Gemini API is accessible.
-    
+    Gemini API 접근 가능성 확인
+
+    기본 검증 수행:
+    - API 키 존재 여부 확인
+    - 프로덕션에서는 경량 API 호출 고려 가능
+
     Args:
-        settings: Application settings
-        
+        settings: 애플리케이션 설정
+
     Returns:
-        bool: True if API is healthy, False otherwise
+        bool: API 상태 정상 여부
     """
     try:
         # Simple check - just verify we have an API key
@@ -59,19 +92,25 @@ async def check_gemini_api_health(settings: Settings) -> bool:
 
 async def check_redis_health(settings: Settings) -> bool:
     """
-    Check if Redis is accessible (if enabled).
-    
+    Redis 접근 가능성 확인 (활성화된 경우)
+
+    검증 로직:
+    1. Redis 비활성화 상태 → 정상으로 판단
+    2. Redis 활성화 상태 → 연결 테스트 수행
+    3. 연결 실패 시 → 비정상으로 판단
+
     Args:
-        settings: Application settings
-        
+        settings: 애플리케이션 설정
+
     Returns:
-        bool: True if Redis is healthy or disabled, False if enabled but unreachable
+        bool: Redis 상태 정상 여부 (비활성화시 True, 활성화시 연결 테스트 결과)
     """
     if not settings.redis_enabled:
         return True
-    
+
     try:
         import redis
+
         r = redis.from_url(settings.redis_url, socket_timeout=1)
         r.ping()
         return True
@@ -81,22 +120,28 @@ async def check_redis_health(settings: Settings) -> bool:
 
 def create_health_router(settings: Settings) -> APIRouter:
     """
-    Create health check router with all endpoints.
-    
+    헬스체크 라우터 생성 (모든 엔드포인트 포함)
+
+    생성되는 엔드포인트:
+    - GET /health - 기본 상태 확인
+    - GET /health/ready - 준비 상태 확인 (종속성 검증)
+    - GET /health/live - 생존 상태 확인
+    - GET /health/metrics - 운영 메트릭
+
     Args:
-        settings: Application settings
-        
+        settings: 애플리케이션 설정
+
     Returns:
-        APIRouter: Configured router with health endpoints
+        APIRouter: 헬스체크 엔드포인트가 구성된 라우터
     """
-    router = APIRouter(tags=["Health"])
-    
-    @router.get("/health", response_model=HealthResponse)
+    router = APIRouter(tags=["헬스체크"])
+
+    @router.get("/health", response_model=HealthResponse, summary="기본 헬스체크")
     async def health_check():
         """
-        Basic health check endpoint.
-        
-        Returns basic application status and metadata.
+        기본 헬스체크 엔드포인트
+
+        애플리케이션 기본 상태 정보와 메타데이터 반환
         """
         return HealthResponse(
             status="healthy",
@@ -107,81 +152,98 @@ def create_health_router(settings: Settings) -> APIRouter:
                 "app_name": settings.app_name,
                 "debug_mode": settings.debug,
                 "rate_limiting_enabled": settings.rate_limit_enabled,
-                "authentication_required": settings.require_api_key
-            }
+                "authentication_required": settings.require_api_key,
+            },
         )
-    
-    @router.get("/health/ready", response_model=ReadinessResponse)
+
+    @router.get(
+        "/health/ready",
+        response_model=ReadinessResponse,
+        summary="준비 상태 확인",
+        responses={
+            503: {
+                "description": "Service Not Ready - 종속성 확인 실패",
+                "content": {
+                    "application/json": {
+                        "schema": {"$ref": "#/components/schemas/ErrorResponse"}
+                    }
+                },
+            }
+        },
+    )
     async def readiness_check():
         """
-        Readiness probe for Kubernetes deployments.
-        
-        Checks if the application is ready to serve traffic.
+        Kubernetes 배포용 준비 상태 프로브
+
+        트래픽 처리 준비 상태 확인 및 종속성 검증
         """
         checks = {
             "gemini_api": await check_gemini_api_health(settings),
-            "redis": await check_redis_health(settings)
+            "redis": await check_redis_health(settings),
         }
-        
+
         all_ready = all(checks.values())
-        
+
         response = ReadinessResponse(
             ready=all_ready,
             checks=checks,
-            timestamp=datetime.now(timezone.utc).isoformat()
+            timestamp=datetime.now(timezone.utc).isoformat(),
         )
-        
+
         if not all_ready:
             raise HTTPException(status_code=503, detail=response.dict())
-        
+
         return response
-    
-    @router.get("/health/live")
+
+    @router.get("/health/live", response_model=LivenessResponse, summary="생존 상태 확인")
     async def liveness_check():
         """
-        Liveness probe for Kubernetes deployments.
-        
-        Simple check to verify the application is running.
+        Kubernetes 배포용 생존 상태 프로브
+
+        애플리케이션 실행 상태 간단 확인
         """
-        return {
-            "status": "alive",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "uptime_seconds": get_uptime()
-        }
-    
-    @router.get("/health/metrics")
+        return LivenessResponse(
+            status="alive",
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            uptime_seconds=get_uptime(),
+        )
+
+    @router.get("/health/metrics", response_model=MetricsResponse, summary="운영 메트릭")
     async def metrics_endpoint():
         """
-        Basic metrics endpoint.
-        
-        Provides operational metrics for monitoring.
+        기본 메트릭 엔드포인트
+
+        모니터링용 운영 메트릭 제공 (Prometheus 통합 가능)
         """
         # In production, you might integrate with Prometheus here
-        return {
-            "uptime_seconds": get_uptime(),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "version": settings.app_version,
-            "config": {
+        return MetricsResponse(
+            uptime_seconds=get_uptime(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            version=settings.app_version,
+            config={
                 "rate_limiting_enabled": settings.rate_limit_enabled,
                 "authentication_required": settings.require_api_key,
-                "debug_mode": settings.debug
-            }
-        }
-    
+                "debug_mode": settings.debug,
+            },
+        )
+
     return router
 
 
 def setup_health_routes(app: FastAPI, settings: Settings | None = None) -> None:
     """
-    Setup health check routes for the FastAPI application.
-    
+    FastAPI 애플리케이션에 헬스체크 라우트 설정
+
+    설정에 따른 조건부 라우트 등록:
+    - health_check_enabled=True인 경우에만 라우트 활성화
+
     Args:
-        app: FastAPI application instance
-        settings: Application settings (optional, will get from dependency if not provided)
+        app: FastAPI 애플리케이션 인스턴스
+        settings: 애플리케이션 설정 (선택적, 미제공시 의존성에서 로딩)
     """
     if settings is None:
         settings = get_settings()
-    
+
     if settings.health_check_enabled:
         health_router = create_health_router(settings)
         app.include_router(health_router)

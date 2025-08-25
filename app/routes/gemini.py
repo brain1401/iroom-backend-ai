@@ -6,9 +6,8 @@ LangServe 기반 Gemini Runnable 공개.
 
 from fastapi import FastAPI, Depends
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
-from typing import Any
 import structlog
+from pydantic import BaseModel
 
 from langserve import add_routes
 from langserve.schema import CustomUserType
@@ -33,6 +32,14 @@ class GeminiResponse(CustomUserType):
     """응답 모델 명세"""
 
     output: str
+
+
+class GeminiHealthResponse(BaseModel):
+    """Gemini 헬스체크 응답 모델"""
+
+    status: str
+    service: str
+    error: str | None = None
 
 
 def _build_gemini_runnable(settings: Settings) -> Runnable:
@@ -69,7 +76,7 @@ def setup_gemini_routes(app: FastAPI, settings: Settings | None = None) -> None:
         settings = get_settings()
 
     # Root redirect to docs
-    @app.get("/")
+    @app.get("/", summary="API 문서 리다이렉트")
     async def redirect_root_to_docs():
         """루트 경로 문서로 리다이렉트"""
         return RedirectResponse("/docs")
@@ -99,15 +106,13 @@ def setup_gemini_routes(app: FastAPI, settings: Settings | None = None) -> None:
     )
 
     # 별도 헬스체크 엔드포인트 유지
-    @app.get("/gemini/health")
+    @app.get("/gemini/health", response_model=GeminiHealthResponse, summary="Gemini API 상태 확인")
     async def gemini_health():
         # API 키 미설정 시 바로 비정상 상태 반환
         if not settings.gemini_api_key:
-            return {
-                "status": "unhealthy",
-                "service": "gemini",
-                "error": "missing_api_key",
-            }
+            return GeminiHealthResponse(
+                status="unhealthy", service="gemini", error="missing_api_key"
+            )
         try:
             # 가벼운 모델 호출로 확인
             await ChatGoogleGenerativeAI(
@@ -116,10 +121,12 @@ def setup_gemini_routes(app: FastAPI, settings: Settings | None = None) -> None:
                 temperature=0.0,
                 max_output_tokens=8,
             ).ainvoke("ping")
-            return {"status": "healthy", "service": "gemini"}
+            return GeminiHealthResponse(status="healthy", service="gemini")
         except Exception as e:
             logger.error("Gemini health check failed", error=str(e))
-            return {"status": "unhealthy", "service": "gemini", "error": str(e)}
+            return GeminiHealthResponse(
+                status="unhealthy", service="gemini", error=str(e)
+            )
 
     logger.info(
         "Gemini routes added via LangServe",

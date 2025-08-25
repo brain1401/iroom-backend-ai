@@ -1,8 +1,24 @@
 """
-Application Configuration Module
+애플리케이션 구성 모듈
 
-Centralized configuration management using Pydantic Settings.
-Supports environment variables and .env file loading.
+Pydantic Settings 기반 중앙집중식 설정 관리
+
+주요 기능:
+- 환경변수와 .env 파일 자동 로딩
+- 타입 안전성과 검증 (Pydantic 모델)
+- 대소문자 구분 없는 설정 로딩
+- UTF-8 인코딩 지원
+
+구성 영역:
+- 앱 메타데이터 (이름, 버전, 디버그 모드)
+- 서버 설정 (호스트, 포트, 워커)
+- Gemini API 설정 (키, 모델, 토큰, 온도)
+- Rate Limiting 설정 (Gemini 2.5 Pro 제약 기반)
+- Redis 설정 (분산 Rate Limiting용)
+- CORS 설정 (브라우저 지원)
+- 인증 설정 (API 키 기반)
+- 로깅 설정 (레벨, 형식)
+- 헬스체크 설정
 """
 
 from pydantic import Field
@@ -11,7 +27,7 @@ from typing import ClassVar
 
 
 class Settings(BaseSettings):
-    """Application settings with validation and type safety."""
+    """타입 안전성과 검증 기능을 갖춘 애플리케이션 설정"""
 
     # pydantic-settings v2 설정 로딩 구성
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
@@ -20,60 +36,67 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # App Configuration
-    app_name: str = Field(default="Gemini AI Backend", description="Application name")
-    app_version: str = Field(default="1.0.0", description="Application version")
-    debug: bool = Field(default=False, description="Debug mode")
-    
-    # Server Configuration
-    host: str = Field(default="0.0.0.0", description="Server host")
-    port: int = Field(default=8000, description="Server port")
-    workers: int = Field(default=1, description="Number of workers")
-    
-    # Gemini API Configuration
-    gemini_api_key: str | None = Field(default=None, description="Google Gemini API Key")
-    gemini_model: str = Field(default="gemini-2.5-pro", description="Gemini model name")
-    gemini_max_tokens: int = Field(default=32000, description="Max tokens per request")
-    gemini_temperature: float = Field(default=0.7, description="Model temperature")
-    
-    # Rate Limiting Configuration (Gemini 2.5 Pro Limits)
+    # 앱 구성
+    app_name: str = Field(default="Gemini AI Backend", description="애플리케이션 이름")
+    app_version: str = Field(default="1.0.0", description="애플리케이션 버전")
+    debug: bool = Field(default=False, description="디버그 모드")
+
+    # 서버 구성
+    host: str = Field(default="0.0.0.0", description="서버 호스트")
+    port: int = Field(default=8000, description="서버 포트")
+    workers: int = Field(default=1, description="워커 프로세스 수")
+
+    # Gemini API 구성
+    gemini_api_key: str | None = Field(
+        default=None, description="Google Gemini API 키"
+    )
+    gemini_model: str = Field(default="gemini-2.5-pro", description="Gemini 모델명")
+    gemini_max_tokens: int = Field(default=32000, description="요청당 최대 토큰 수")
+    gemini_temperature: float = Field(default=0.7, description="모델 온도 (창의성 수준)")
+
+    # Rate Limiting 구성 (Gemini 2.5 Pro 제약 기준)
     rate_limit_requests_per_minute: int = Field(
-        default=15, 
-        description="Requests per minute (Free tier: 15, Paid: 60)"
+        default=15, description="분당 요청 수 (무료: 15, 유료: 60)"
     )
     rate_limit_tokens_per_day: int = Field(
-        default=1000000, 
-        description="Tokens per day (Free tier: 1M, Paid: 10M)"
+        default=1000000, description="일일 토큰 수 (무료: 1M, 유료: 10M)"
     )
-    rate_limit_enabled: bool = Field(default=True, description="Enable rate limiting")
-    
-    # Redis Configuration (for distributed rate limiting)
-    redis_url: str = Field(default="redis://localhost:6379", description="Redis connection URL")
-    redis_enabled: bool = Field(default=False, description="Enable Redis for rate limiting")
-    
-    # CORS Configuration
-    cors_origins: list[str] = Field(
-        default=["*"], 
-        description="Allowed CORS origins"
+    rate_limit_enabled: bool = Field(default=True, description="Rate Limiting 활성화")
+
+    # Redis 구성 (분산 Rate Limiting용)
+    redis_url: str = Field(
+        default="redis://localhost:6379", description="Redis 연결 URL"
     )
-    cors_allow_credentials: bool = Field(default=True, description="Allow credentials in CORS")
-    
-    # Authentication Configuration
-    api_key_header: str = Field(default="x-api-key", description="API key header name")
-    require_api_key: bool = Field(default=False, description="Require API key authentication")
-    valid_api_keys: list[str] = Field(default=[], description="List of valid API keys")
-    
-    # Logging Configuration
-    log_level: str = Field(default="INFO", description="Logging level")
-    log_format: str = Field(default="json", description="Log format: json or text")
-    
-    # Health Check Configuration
-    health_check_enabled: bool = Field(default=True, description="Enable health check endpoints")
-    
+    redis_enabled: bool = Field(
+        default=False, description="Redis 기반 Rate Limiting 활성화"
+    )
+
+    # CORS 구성
+    cors_origins: list[str] = Field(default=["*"], description="허용된 CORS 오리진")
+    cors_allow_credentials: bool = Field(
+        default=True, description="CORS 자격증명 허용"
+    )
+
+    # 인증 구성
+    api_key_header: str = Field(default="x-api-key", description="API 키 헤더명")
+    require_api_key: bool = Field(
+        default=False, description="API 키 인증 필수 여부"
+    )
+    valid_api_keys: list[str] = Field(default=[], description="유효한 API 키 목록")
+
+    # 로깅 구성
+    log_level: str = Field(default="INFO", description="로그 레벨")
+    log_format: str = Field(default="json", description="로그 형식 (json 또는 text)")
+
+    # 헬스체크 구성
+    health_check_enabled: bool = Field(
+        default=True, description="헬스체크 엔드포인트 활성화"
+    )
+
     # v2에서는 model_config로 대체함
 
 
-# Global settings instance
+# 전역 설정 인스턴스
 def get_settings() -> Settings:
-    """Get settings instance (can be cached for production)."""
+    """설정 인스턴스 반환 (프로덕션에서는 캐시 가능)"""
     return Settings()
