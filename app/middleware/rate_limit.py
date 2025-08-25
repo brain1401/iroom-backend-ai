@@ -246,7 +246,7 @@ async def rate_limit_middleware(
                     return {"type": "http.request", "body": body}
 
                 request._receive = receive
-        except:
+        except Exception:
             estimated_tokens = 100  # Default estimation on parse error
 
     # Check rate limits
