@@ -24,6 +24,7 @@ from app.middleware.auth import setup_authentication
 from app.middleware.logging import setup_logging
 from app.routes.health import setup_health_routes
 from app.routes.gemini import setup_gemini_routes
+from app.routes.text_recognition import setup_text_recognition_routes  # 글자인식 (메인)
 from app.utils.errors import setup_error_handlers
 
 # Load environment variables early
@@ -71,6 +72,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Setup routes
     setup_health_routes(app, settings)
     setup_gemini_routes(app, settings)
+    setup_text_recognition_routes(app, settings)  # 글자인식 (메인)
 
     # Setup error handlers (should be last)
     setup_error_handlers(app, settings)
@@ -98,6 +100,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Add ErrorResponse models to schema components
         from app.utils.errors import ErrorResponse, ErrorDetail
 
+        # Get individual schemas
         error_detail_schema = ErrorDetail.model_json_schema()
         error_response_schema = ErrorResponse.model_json_schema()
 
@@ -107,8 +110,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if "schemas" not in openapi_schema["components"]:
             openapi_schema["components"]["schemas"] = {}
 
-        # Add error models
-        openapi_schema["components"]["schemas"]["ErrorDetail"] = error_detail_schema
+        # Fix ErrorResponse schema to use proper OpenAPI references
+        # Remove $defs and update reference to use components/schemas
+        if "$defs" in error_response_schema:
+            # Extract ErrorDetail from $defs and add it separately
+            if "ErrorDetail" in error_response_schema["$defs"]:
+                error_detail_from_defs = error_response_schema["$defs"]["ErrorDetail"]
+                openapi_schema["components"]["schemas"]["ErrorDetail"] = error_detail_from_defs
+            
+            # Remove $defs from ErrorResponse
+            error_response_schema = {k: v for k, v in error_response_schema.items() if k != "$defs"}
+            
+            # Update the reference in ErrorResponse
+            if ("properties" in error_response_schema and 
+                "error" in error_response_schema["properties"] and 
+                "$ref" in error_response_schema["properties"]["error"]):
+                error_response_schema["properties"]["error"]["$ref"] = "#/components/schemas/ErrorDetail"
+        else:
+            # If no $defs, add ErrorDetail separately
+            openapi_schema["components"]["schemas"]["ErrorDetail"] = error_detail_schema
+
+        # Add the corrected ErrorResponse schema
         openapi_schema["components"]["schemas"]["ErrorResponse"] = error_response_schema
 
         # 보안 스키마 추가 (인증 활성화시)
@@ -127,9 +149,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 },
             }
 
-            # 보안 요구사항을 Gemini 엔드포인트에 추가
+            # 보안 요구사항을 보호된 엔드포인트에 추가
             for path, methods in openapi_schema["paths"].items():
-                if path.startswith("/gemini/") and path != "/gemini/health":
+                # Gemini와 OCR 엔드포인트에 인증 적용 (헬스체크 제외)
+                if ((path.startswith("/gemini/") and path != "/gemini/health") or 
+                    (path.startswith("/text-recognition/") and path != "/text-recognition/health")):
                     for method, details in methods.items():
                         if method in ["post", "get"]:
                             details["security"] = [
@@ -236,8 +260,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     # 모든 엔드포인트에 500 추가
                     details["responses"]["500"] = error_responses["500"]
 
-                    # Gemini 엔드포인트에 503 추가
-                    if path.startswith("/gemini/"):
+                    # Gemini와 OCR 엔드포인트에 503 추가
+                    if path.startswith("/gemini/") or path.startswith("/text-recognition/"):
                         details["responses"]["503"] = error_responses["503"]
 
         app.openapi_schema = openapi_schema
