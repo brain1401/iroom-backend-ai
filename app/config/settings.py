@@ -92,8 +92,39 @@ class Settings(BaseSettings):
     health_check_enabled: bool = Field(
         default=True, description="헬스체크 엔드포인트 활성화"
     )
-
-    # v2에서는 model_config로 대체함
+    
+    # OCR 전용 설정
+    ocr_cache_enabled: bool = Field(
+        default=True, description="OCR 결과 캐싱 활성화"
+    )
+    ocr_cache_ttl: int = Field(
+        default=3600, description="OCR 캐시 TTL (초)"
+    )
+    ocr_max_batch_size: int = Field(
+        default=20, description="배치 OCR 최대 파일 수"
+    )
+    ocr_circuit_breaker_enabled: bool = Field(
+        default=True, description="OCR 서킷 브레이커 활성화"
+    )
+    
+    # 모니터링 설정
+    metrics_enabled: bool = Field(
+        default=True, description="메트릭 수집 활성화"
+    )
+    metrics_window_size: int = Field(
+        default=1000, description="메트릭 윈도우 크기"
+    )
+    alert_enabled: bool = Field(
+        default=True, description="알림 시스템 활성화"
+    )
+    
+    # 성능 최적화 설정
+    max_concurrent_ocr: int = Field(
+        default=5, description="최대 동시 OCR 처리 수"
+    )
+    memory_cache_size_mb: int = Field(
+        default=100, description="메모리 캐시 크기 (MB)"
+    )
 
 
 # 전역 설정 인스턴스
