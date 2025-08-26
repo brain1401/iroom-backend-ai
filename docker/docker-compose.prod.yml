@@ -1,0 +1,211 @@
+# 프로덕션 배포용 Docker Compose
+# 한국어 답안지 OCR 백엔드 서비스
+
+version: '3.8'
+
+services:
+  # OCR API 서버 (메인 애플리케이션)
+  ocr-api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.prod
+      target: production
+    image: iroom-ocr-backend:latest
+    container_name: ocr-api-prod
+    restart: unless-stopped
+    
+    # 환경 변수
+    environment:
+      - ENVIRONMENT=production
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=json
+      
+      # API 설정
+      - HOST=0.0.0.0
+      - PORT=8000
+      - WORKERS=4
+      
+      # Gemini API (환경변수나 Docker Secret으로 주입)
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      
+      # 인증 설정
+      - REQUIRE_API_KEY=true
+      - VALID_API_KEYS=${VALID_API_KEYS:-}
+      
+      # Rate Limiting
+      - RATE_LIMIT_ENABLED=true
+      - RATE_LIMIT_REQUESTS_PER_MINUTE=15
+      - RATE_LIMIT_TOKENS_PER_DAY=1000000
+      
+      # Redis 설정 (캐싱 및 분산 Rate Limiting)
+      - REDIS_ENABLED=true
+      - REDIS_URL=redis://redis:6379/0
+      
+      # OCR 최적화 설정
+      - OCR_CACHE_ENABLED=true
+      - OCR_CACHE_TTL=3600
+      - OCR_MAX_BATCH_SIZE=20
+      - MAX_CONCURRENT_OCR=5
+      - MEMORY_CACHE_SIZE_MB=200
+      
+      # 모니터링 설정
+      - METRICS_ENABLED=true
+      - ALERT_ENABLED=true
+      
+    # 포트 매핑
+    ports:
+      - "8000:8000"
+    
+    # 볼륨 마운트
+    volumes:
+      - ./logs:/app/logs
+      - ./tmp:/app/tmp
+    
+    # 의존성
+    depends_on:
+      - redis
+    
+    # 리소스 제한
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+    
+    # 헬스체크
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health/api', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Redis (캐싱 및 Rate Limiting)
+  redis:
+    image: redis:7-alpine
+    container_name: ocr-redis-prod
+    restart: unless-stopped
+    
+    # Redis 설정
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --appendfsync everysec
+    
+    # 포트 (내부 통신만, 외부 노출 안함)
+    expose:
+      - "6379"
+    
+    # 데이터 볼륨
+    volumes:
+      - redis_data:/data
+      - ./redis/redis.conf:/etc/redis/redis.conf:ro
+    
+    # 리소스 제한
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+    
+    # 헬스체크
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # Nginx (리버스 프록시 및 로드 밸런서)
+  nginx:
+    image: nginx:alpine
+    container_name: ocr-nginx-prod
+    restart: unless-stopped
+    
+    # 포트 매핑 (실제 외부 접근점)
+    ports:
+      - "80:80"
+      - "443:443"
+    
+    # Nginx 설정
+    volumes:
+      - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/ssl/certs:ro
+      - ./logs/nginx:/var/log/nginx
+    
+    # 의존성
+    depends_on:
+      - ocr-api
+    
+    # 헬스체크
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  # 모니터링 (Prometheus + Grafana - 선택사항)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ocr-prometheus-prod
+    restart: unless-stopped
+    
+    # 포트 (내부 접근만)
+    expose:
+      - "9090"
+    
+    # Prometheus 설정
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    
+    # 실행 옵션
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ocr-grafana-prod
+    restart: unless-stopped
+    
+    # 환경 변수
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin123}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    
+    # 포트 (내부 접근만, Nginx를 통해 프록시)
+    expose:
+      - "3000"
+    
+    # 데이터 볼륨
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana:/etc/grafana/provisioning:ro
+    
+    # 의존성
+    depends_on:
+      - prometheus
+
+# 볼륨 정의
+volumes:
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+# 네트워크 정의
+networks:
+  default:
+    name: ocr-network
+    driver: bridge
