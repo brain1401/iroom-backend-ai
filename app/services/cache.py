@@ -14,7 +14,7 @@ import hashlib
 import time
 import pickle
 import asyncio
-from typing import Any, Optional, Dict, Tuple, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 from dataclasses import dataclass
 import structlog
 
@@ -126,8 +126,8 @@ class MemoryCache:
         self.max_size_bytes = max_size_mb * 1024 * 1024
         self.default_ttl = default_ttl
         
-        self._cache: Dict[str, Tuple[Any, float, int]] = {}  # key -> (value, expire_time, size)
-        self._access_order: Dict[str, float] = {}  # key -> last_access_time
+        self._cache: dict[str, tuple[Any, float, int]] = {}  # key -> (value, expire_time, size)
+        self._access_order: dict[str, float] = {}  # key -> last_access_time
         self._current_size = 0
         self._stats = CacheStats()
         
@@ -137,7 +137,7 @@ class MemoryCache:
             default_ttl=default_ttl
         )
     
-    async def get(self, key: str) -> Optional[Any]:
+    async def get(self, key: str) -> Any | None:
         """캐시에서 값 조회"""
         current_time = time.time()
         
@@ -160,7 +160,7 @@ class MemoryCache:
         logger.debug("메모리 캐시 히트", key=key[:32], size_bytes=size)
         return value
     
-    async def set(self, key: str, value: Any, ttl: Optional[int] = None) -> bool:
+    async def set(self, key: str, value: Any, ttl: int | None = None) -> bool:
         """캐시에 값 저장"""
         try:
             # 값 직렬화 및 크기 계산
@@ -269,7 +269,7 @@ class RedisCache:
         self.redis_url = redis_url
         self.key_prefix = key_prefix
         self.default_ttl = default_ttl
-        self._redis: Optional[RedisType] = None
+        self._redis: RedisType | None = None
         self._stats = CacheStats()
         
         logger.info("Redis 캐시 초기화", redis_url=redis_url, key_prefix=key_prefix)
@@ -298,7 +298,7 @@ class RedisCache:
         """접두사가 포함된 키 생성"""
         return f"{self.key_prefix}{key}"
     
-    async def get(self, key: str) -> Optional[Any]:
+    async def get(self, key: str) -> Any | None:
         """Redis에서 값 조회"""
         try:
             redis = await self._get_redis()
@@ -320,7 +320,7 @@ class RedisCache:
             self._stats.misses += 1
             return None
     
-    async def set(self, key: str, value: Any, ttl: Optional[int] = None) -> bool:
+    async def set(self, key: str, value: Any, ttl: int | None = None) -> bool:
         """Redis에 값 저장"""
         try:
             redis = await self._get_redis()
@@ -409,7 +409,7 @@ class CacheService:
         )
         
         # L2: Redis 캐시
-        self.redis_cache: Optional[RedisCache] = None
+        self.redis_cache: RedisCache | None = None
         if redis_enabled and REDIS_AVAILABLE:
             try:
                 self.redis_cache = RedisCache(
@@ -451,7 +451,7 @@ class CacheService:
         if self._cleanup_task is None:
             await self.start_cleanup_task()
     
-    async def get_text_recognition_result(self, image_hash: str) -> Optional[Any]:
+    async def get_text_recognition_result(self, image_hash: str) -> Any | None:
         """
         글자인식 결과 조회
         
@@ -459,7 +459,7 @@ class CacheService:
             image_hash: 이미지 해시
             
         Returns:
-            Optional[Any]: 캐시된 OCR 결과
+            Any | None: 캐시된 OCR 결과
         """
         await self._ensure_cleanup_task()
         cache_key = f"ocr_result:{image_hash}"
@@ -486,7 +486,7 @@ class CacheService:
         self, 
         image_hash: str, 
         ocr_result: Any, 
-        ttl: Optional[int] = None
+        ttl: int | None = None
     ) -> bool:
         """
         OCR 결과 저장
@@ -569,7 +569,7 @@ class CacheService:
         else:
             return ImageHasher.compute_hash(image_data)
     
-    def get_cache_stats(self) -> Dict[str, Any]:
+    def get_cache_stats(self) -> dict[str, Any]:
         """
         전체 캐시 통계 조회
         
@@ -627,7 +627,7 @@ class CacheService:
 
 
 # 전역 캐시 서비스 인스턴스
-_cache_service: Optional[CacheService] = None
+_cache_service: CacheService | None = None
 
 
 def get_cache_service(**kwargs) -> CacheService:

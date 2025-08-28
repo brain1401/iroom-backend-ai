@@ -12,7 +12,7 @@
 
 import time
 import asyncio
-from typing import Dict, List, Any, Optional
+from typing import Any
 from datetime import datetime
 from dataclasses import dataclass, field
 from collections import defaultdict, deque
@@ -40,7 +40,7 @@ class TextRecognitionMetric:
     confidence_avg: float = 0.0
     questions_detected: int = 0
     success: bool = True
-    error_code: Optional[str] = None
+    error_code: str | None = None
     gemini_model: str = "gemini-2.0-flash-exp"
 
 
@@ -97,7 +97,7 @@ class MetricsCollector:
     def __init__(
         self,
         window_size: int = 1000,         # 메트릭 윈도우 크기
-        alert_thresholds: Optional[Dict[str, float]] = None
+        alert_thresholds: dict[str, float] | None = None
     ):
         """
         메트릭 컬렉터 초기화
@@ -118,12 +118,12 @@ class MetricsCollector:
         self.system_metrics: deque = deque(maxlen=window_size // 10)  # 시스템 메트릭은 적게 저장
         
         # 집계 데이터 캐시
-        self._stats_cache: Optional[PerformanceStats] = None
+        self._stats_cache: PerformanceStats | None = None
         self._cache_timestamp: float = 0
         self._cache_ttl: int = 60  # 캐시 TTL (초)
         
         # 알림 관련
-        self._last_alerts: Dict[str, float] = {}
+        self._last_alerts: dict[str, float] = {}
         self._alert_cooldown: int = 300  # 알림 쿨다운 (초)
         
         logger.info(
@@ -173,7 +173,7 @@ class MetricsCollector:
     
     def get_performance_stats(
         self,
-        time_range_minutes: Optional[int] = None
+        time_range_minutes: int | None = None
     ) -> PerformanceStats:
         """
         성능 통계 조회 (캐싱 지원)
@@ -237,7 +237,7 @@ class MetricsCollector:
         
         return stats
     
-    def _percentile(self, sorted_data: List[float], percentile: float) -> float:
+    def _percentile(self, sorted_data: list[float], percentile: float) -> float:
         """백분위수 계산"""
         if not sorted_data:
             return 0.0
@@ -251,7 +251,7 @@ class MetricsCollector:
         
         return sorted_data[f] * (1 - c) + sorted_data[f + 1] * c
     
-    def get_error_analysis(self, time_range_minutes: int = 60) -> Dict[str, Any]:
+    def get_error_analysis(self, time_range_minutes: int = 60) -> dict[str, Any]:
         """
         오류 분석 정보 제공
         
@@ -302,7 +302,7 @@ class MetricsCollector:
             "time_range_minutes": time_range_minutes
         }
     
-    def get_quality_metrics(self, time_range_minutes: int = 60) -> Dict[str, Any]:
+    def get_quality_metrics(self, time_range_minutes: int = 60) -> dict[str, Any]:
         """
         이미지 품질 및 OCR 품질 메트릭
         
@@ -391,7 +391,7 @@ class MetricsCollector:
         alert_type: str, 
         level: AlertLevel, 
         message: str, 
-        context: Dict[str, Any]
+        context: dict[str, Any]
     ):
         """
         알림 전송 (쿨다운 적용)
@@ -425,7 +425,7 @@ class MetricsCollector:
         # await self._send_to_slack(message, level)
         # await self._send_to_email(message, level, context)
     
-    def get_dashboard_data(self) -> Dict[str, Any]:
+    def get_dashboard_data(self) -> dict[str, Any]:
         """
         대시보드용 종합 데이터 제공
         
@@ -462,7 +462,7 @@ class MetricsCollector:
     def _determine_health_status(
         self, 
         stats: PerformanceStats, 
-        error_analysis: Dict[str, Any]
+        error_analysis: dict[str, Any]
     ) -> str:
         """
         시스템 건강 상태 결정
@@ -493,7 +493,7 @@ class MetricsCollector:
 
 
 # 전역 메트릭 컬렉터 인스턴스
-_metrics_collector: Optional[MetricsCollector] = None
+_metrics_collector: MetricsCollector | None = None
 
 
 def get_metrics_collector(**kwargs) -> MetricsCollector:

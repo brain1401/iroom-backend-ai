@@ -12,7 +12,7 @@
 
 import asyncio
 import time
-from typing import List, Dict, Any, Optional, AsyncGenerator
+from typing import Any, AsyncGenerator
 from uuid import uuid4, UUID
 from datetime import datetime
 from pydantic import BaseModel, Field
@@ -45,7 +45,7 @@ class BatchTextRecognitionProgress(BaseModel):
     completed_items: int
     failed_items: int
     started_at: datetime
-    estimated_completion: Optional[datetime] = None
+    estimated_completion: datetime | None = None
     
     @property
     def progress_percentage(self) -> float:
@@ -60,8 +60,8 @@ class BatchTextRecognitionResult(BaseModel):
     item_id: UUID
     filename: str
     success: bool
-    result: Optional[TextRecognitionAnswerResponse] = None
-    error: Optional[TextRecognitionErrorResponse] = None
+    result: TextRecognitionAnswerResponse | None = None
+    error: TextRecognitionErrorResponse | None = None
     processing_time_ms: int
 
 
@@ -73,7 +73,7 @@ class BatchTextRecognitionSummary(BaseModel):
     failed_items: int
     total_processing_time_ms: int
     average_processing_time_ms: float
-    results: List[BatchTextRecognitionResult]
+    results: list[BatchTextRecognitionResult]
 
 
 class BatchTextRecognitionService:
@@ -113,10 +113,10 @@ class BatchTextRecognitionService:
         self.rate_limiter = asyncio.Semaphore(rate_limit_per_minute)
         
         # 진행 상태 추적
-        self._progress_tracker: Dict[UUID, BatchTextRecognitionProgress] = {}
+        self._progress_tracker: dict[UUID, BatchTextRecognitionProgress] = {}
         
         # Gemini 모델 (재사용)
-        self._gemini_model: Optional[ChatGoogleGenerativeAI] = None
+        self._gemini_model: ChatGoogleGenerativeAI | None = None
     
     def _get_gemini_model(self) -> ChatGoogleGenerativeAI:
         """Gemini 모델 인스턴스 생성/재사용"""
@@ -252,7 +252,7 @@ class BatchTextRecognitionService:
                         processing_time_ms=processing_time_ms
                     )
     
-    async def _call_gemini_vision(self, image_data: bytes, model: ChatGoogleGenerativeAI) -> Dict[str, Any]:
+    async def _call_gemini_vision(self, image_data: bytes, model: ChatGoogleGenerativeAI) -> dict[str, Any]:
         """
         Gemini Vision API 호출 (기존 로직과 동일)
         
@@ -330,7 +330,7 @@ Return the results in this exact JSON format:
     
     async def process_batch(
         self, 
-        items: List[BatchTextRecognitionItem]
+        items: list[BatchTextRecognitionItem]
     ) -> AsyncGenerator[BatchTextRecognitionProgress, None]:
         """
         배치 OCR 처리 (스트리밍 진행률 포함)
@@ -373,7 +373,7 @@ Return the results in this exact JSON format:
             for item in sorted_items
         ]
         
-        results: List[BatchTextRecognitionResult] = []
+        results: list[BatchTextRecognitionResult] = []
         
         # 완료된 태스크부터 처리 (as_completed)
         for completed_task in asyncio.as_completed(tasks):
@@ -428,10 +428,10 @@ Return the results in this exact JSON format:
         # 진행 추적 정리
         del self._progress_tracker[batch_id]
     
-    def get_batch_progress(self, batch_id: UUID) -> Optional[BatchTextRecognitionProgress]:
+    def get_batch_progress(self, batch_id: UUID) -> BatchTextRecognitionProgress | None:
         """배치 진행 상태 조회"""
         return self._progress_tracker.get(batch_id)
     
-    def get_active_batches(self) -> List[BatchTextRecognitionProgress]:
+    def get_active_batches(self) -> list[BatchTextRecognitionProgress]:
         """활성 배치 목록 조회"""
         return list(self._progress_tracker.values())

@@ -13,7 +13,7 @@
 import asyncio
 import time
 from enum import Enum
-from typing import Callable, Any, Optional, Dict
+from typing import Callable, Any
 from dataclasses import dataclass, field
 import structlog
 
@@ -33,8 +33,8 @@ class CircuitBreakerMetrics:
     total_requests: int = 0
     failed_requests: int = 0
     successful_requests: int = 0
-    last_failure_time: Optional[float] = None
-    last_success_time: Optional[float] = None
+    last_failure_time: float | None = None
+    last_success_time: float | None = None
     state_changed_at: float = field(default_factory=time.time)
     consecutive_failures: int = 0
     consecutive_successes: int = 0
@@ -54,7 +54,7 @@ class CircuitBreakerMetrics:
 
 class CircuitBreakerOpenError(Exception):
     """서킷 브레이커가 열린 상태에서 요청이 차단된 경우"""
-    def __init__(self, last_failure_time: Optional[float] = None):
+    def __init__(self, last_failure_time: float | None = None):
         self.last_failure_time = last_failure_time
         super().__init__("Circuit breaker is OPEN - requests are blocked")
 
@@ -114,7 +114,7 @@ class CircuitBreaker:
     async def call(
         self, 
         func: Callable[[], Any], 
-        fallback: Optional[Callable[[], Any]] = None
+        fallback: Callable[[], Any] | None = None
     ) -> Any:
         """
         서킷 브레이커를 통한 함수 호출
@@ -323,7 +323,7 @@ class CircuitBreaker:
                 self.metrics.total_requests - self.metrics.failed_requests
             )
     
-    def get_metrics(self) -> Dict[str, Any]:
+    def get_metrics(self) -> dict[str, Any]:
         """현재 메트릭 조회"""
         return {
             "name": self.name,
@@ -352,7 +352,7 @@ class CircuitBreaker:
 
 
 # 전역 서킷 브레이커 인스턴스들
-_circuit_breakers: Dict[str, CircuitBreaker] = {}
+_circuit_breakers: dict[str, CircuitBreaker] = {}
 
 
 def get_circuit_breaker(
@@ -374,6 +374,6 @@ def get_circuit_breaker(
     return _circuit_breakers[name]
 
 
-def get_all_circuit_breakers() -> Dict[str, CircuitBreaker]:
+def get_all_circuit_breakers() -> dict[str, CircuitBreaker]:
     """모든 서킷 브레이커 인스턴스 반환"""
     return _circuit_breakers.copy()
