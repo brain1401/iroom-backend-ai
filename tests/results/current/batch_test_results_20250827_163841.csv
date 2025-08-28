@@ -1,0 +1,2 @@
+filename,success,processing_time_ms,answers_detected,confidence_avg,file_size_kb,error_message,retry_count
+exam1.jpg,True,5394,7,0.9671428571428571,5683,,0

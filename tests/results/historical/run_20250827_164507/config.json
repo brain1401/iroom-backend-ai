@@ -1,0 +1,29 @@
+{
+  "test_execution": {
+    "timestamp": "20250827_164507",
+    "start_time": "2025-08-27T16:45:02.755856",
+    "end_time": "2025-08-27T16:45:07.523720",
+    "duration_seconds": 4.767864942550659
+  },
+  "test_config": {
+    "image_folder": "test_exam_image",
+    "api_base_url": "http://localhost:8000",
+    "endpoint": "/text-recognition/answer-sheet",
+    "full_endpoint_url": "http://localhost:8000/text-recognition/answer-sheet",
+    "max_concurrent": 2,
+    "timeout": 60.0,
+    "max_retries": 3,
+    "retry_delay": 1.0
+  },
+  "environment": {
+    "supported_extensions": [
+      ".jpg",
+      ".png",
+      ".jpeg",
+      ".gif",
+      ".webp"
+    ],
+    "python_version": "3.11+",
+    "script_version": "2.0.0"
+  }
+}
