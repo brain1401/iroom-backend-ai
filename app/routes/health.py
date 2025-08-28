@@ -137,7 +137,7 @@ def create_health_router(settings: Settings) -> APIRouter:
     router = APIRouter(tags=["헬스체크"])
 
     @router.get("/health", response_model=HealthResponse, summary="기본 헬스체크")
-    async def health_check():
+    async def health_check() -> HealthResponse:
         """
         기본 헬스체크 엔드포인트
 
@@ -171,7 +171,7 @@ def create_health_router(settings: Settings) -> APIRouter:
             }
         },
     )
-    async def readiness_check():
+    async def readiness_check() -> ReadinessResponse:
         """
         Kubernetes 배포용 준비 상태 프로브
 
@@ -196,7 +196,7 @@ def create_health_router(settings: Settings) -> APIRouter:
         return response
 
     @router.get("/health/live", response_model=LivenessResponse, summary="생존 상태 확인")
-    async def liveness_check():
+    async def liveness_check() -> LivenessResponse:
         """
         Kubernetes 배포용 생존 상태 프로브
 
@@ -209,7 +209,7 @@ def create_health_router(settings: Settings) -> APIRouter:
         )
 
     @router.get("/health/metrics", response_model=MetricsResponse, summary="운영 메트릭")
-    async def metrics_endpoint():
+    async def metrics_endpoint() -> MetricsResponse:
         """
         기본 메트릭 엔드포인트
 

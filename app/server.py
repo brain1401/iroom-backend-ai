@@ -116,16 +116,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Extract ErrorDetail from $defs and add it separately
             if "ErrorDetail" in error_response_schema["$defs"]:
                 error_detail_from_defs = error_response_schema["$defs"]["ErrorDetail"]
-                openapi_schema["components"]["schemas"]["ErrorDetail"] = error_detail_from_defs
-            
+                openapi_schema["components"]["schemas"][
+                    "ErrorDetail"
+                ] = error_detail_from_defs
+
             # Remove $defs from ErrorResponse
-            error_response_schema = {k: v for k, v in error_response_schema.items() if k != "$defs"}
-            
+            error_response_schema = {
+                k: v for k, v in error_response_schema.items() if k != "$defs"
+            }
+
             # Update the reference in ErrorResponse
-            if ("properties" in error_response_schema and 
-                "error" in error_response_schema["properties"] and 
-                "$ref" in error_response_schema["properties"]["error"]):
-                error_response_schema["properties"]["error"]["$ref"] = "#/components/schemas/ErrorDetail"
+            if (
+                "properties" in error_response_schema
+                and "error" in error_response_schema["properties"]
+                and "$ref" in error_response_schema["properties"]["error"]
+            ):
+                error_response_schema["properties"]["error"][
+                    "$ref"
+                ] = "#/components/schemas/ErrorDetail"
         else:
             # If no $defs, add ErrorDetail separately
             openapi_schema["components"]["schemas"]["ErrorDetail"] = error_detail_schema
@@ -152,8 +160,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # 보안 요구사항을 보호된 엔드포인트에 추가
             for path, methods in openapi_schema["paths"].items():
                 # Gemini와 OCR 엔드포인트에 인증 적용 (헬스체크 제외)
-                if ((path.startswith("/gemini/") and path != "/gemini/health") or 
-                    (path.startswith("/text-recognition/") and path != "/text-recognition/health")):
+                if (path.startswith("/gemini/") and path != "/gemini/health") or (
+                    path.startswith("/text-recognition/")
+                    and path != "/text-recognition/health"
+                ):
                     for method, details in methods.items():
                         if method in ["post", "get"]:
                             details["security"] = [
@@ -261,7 +271,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     details["responses"]["500"] = error_responses["500"]
 
                     # Gemini와 OCR 엔드포인트에 503 추가
-                    if path.startswith("/gemini/") or path.startswith("/text-recognition/"):
+                    if path.startswith("/gemini/") or path.startswith(
+                        "/text-recognition/"
+                    ):
                         details["responses"]["503"] = error_responses["503"]
 
         app.openapi_schema = openapi_schema
