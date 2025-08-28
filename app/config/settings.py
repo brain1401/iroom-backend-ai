@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = Field(
         default=None, description="Google Gemini API 키"
     )
-    gemini_model: str = Field(default="gemini-2.5-pro", description="Gemini 모델명")
+    gemini_model: str = Field(default="gemini-2.0-flash-exp", description="Gemini 모델명 (Vision 지원)")
     gemini_max_tokens: int = Field(default=32000, description="요청당 최대 토큰 수")
     gemini_temperature: float = Field(default=0.7, description="모델 온도 (창의성 수준)")
 
