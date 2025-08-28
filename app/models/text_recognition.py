@@ -11,7 +11,7 @@
 """
 
 from datetime import datetime
-from typing import List
+
 from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 
@@ -96,7 +96,7 @@ class TextRecognitionAnswerResponse(BaseModel):
         default_factory=datetime.now,
         description="처리 완료 시각"
     )
-    answers: List[TextRecognitionAnswer] = Field(
+    answers: list[TextRecognitionAnswer] = Field(
         ...,
         description="추출된 답안 목록",
         min_length=0,

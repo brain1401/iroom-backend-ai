@@ -19,8 +19,9 @@ import structlog
 
 logger = structlog.get_logger("image_processing")
 
-# 지원되는 이미지 형식
-SUPPORTED_FORMATS = {"JPEG", "PNG", "WEBP", "GIF"}
+# 지원되는 이미지 형식 (대소문자 무관)
+# MPO: iPhone에서 사용하는 Multi-Picture Object 형식 (스테레오/다중 이미지)
+SUPPORTED_FORMATS = {"JPEG", "PNG", "WEBP", "GIF", "MPO"}
 
 # 파일 크기 제한 (20MB)
 MAX_FILE_SIZE = 20 * 1024 * 1024
@@ -71,8 +72,8 @@ def validate_image_file(image_data: bytes) -> Tuple[str, int, int]:
             image_format = img.format
             width, height = img.size
             
-            # 3. 지원 형식 확인
-            if image_format not in SUPPORTED_FORMATS:
+            # 3. 지원 형식 확인 (대소문자 무관)
+            if image_format is None or image_format.upper() not in SUPPORTED_FORMATS:
                 raise ImageValidationError(
                     f"지원되지 않는 이미지 형식입니다. "
                     f"지원 형식: {', '.join(SUPPORTED_FORMATS)}"
@@ -95,10 +96,11 @@ def validate_image_file(image_data: bytes) -> Tuple[str, int, int]:
                 "이미지 검증 완료",
                 format=image_format,
                 size_kb=len(image_data) // 1024,
-                resolution=f"{width}x{height}"
+                resolution=f"{width}x{height}",
+                is_mpo=image_format == "MPO"
             )
             
-            return image_format, width, height
+            return image_format.upper() if image_format else "UNKNOWN", width, height
     
     except IOError as e:
         raise ImageValidationError(f"손상된 이미지 파일입니다: {str(e)}")

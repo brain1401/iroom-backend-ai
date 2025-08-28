@@ -10,7 +10,7 @@
 """
 
 import json
-from typing import List
+
 from fastapi import HTTPException
 import structlog
 
@@ -26,7 +26,7 @@ logger = structlog.get_logger("text_recognition_core")
 
 class TextRecognitionParsingResponse(BaseModel):
     """Gemini Vision API 응답 파싱용 모델"""
-    answers: List[TextRecognitionAnswer]
+    answers: list[TextRecognitionAnswer]
     
     @property
     def detected_questions(self) -> int:
@@ -36,27 +36,71 @@ class TextRecognitionParsingResponse(BaseModel):
 
 def create_text_recognition_prompt() -> str:
     """
-    한국어 답안지 글자인식 처리용 프롬프트 생성
+    한국어 수학 답안지 글자인식 처리용 고도화된 프롬프트 생성
+    
+    수학 기호 특화 인식:
+    - √ (제곱근), ∛ (세제곱근) 
+    - ° (도), ² (제곱), ³ (세제곱)
+    - × (곱셈), ÷ (나눗셈), / (분수)
+    - < > ≤ ≥ (부등호)
+    - 분수 표기 (a/b 형태)
+    - 혼합 표기 (숫자+문자)
     
     Returns:
-        str: 구조화된 글자인식 프롬프트
+        str: 수학 기호 특화 글자인식 프롬프트
     """
     return """
-You are an expert Korean handwriting recognition specialist for exam answer sheets.
+You are an expert Korean mathematical handwriting recognition specialist for exam answer sheets.
 
-Extract all handwritten Korean text from subjective question areas in this image.
+CRITICAL INSTRUCTIONS:
+1. This is a Korean mathematics exam answer sheet with 7 questions (주1 to 주7)
+2. Focus on MATHEMATICAL EXPRESSIONS including special symbols
+3. Pay special attention to these mathematical symbols:
+   - √ (square root) - very important
+   - ∛ (cube root) - very important  
+   - ° (degree symbol)
+   - ² ³ (superscript numbers for powers)
+   - × (multiplication symbol, NOT letter x)
+   - / (division/fraction line)
+   - < > ≤ ≥ (inequality symbols)
+   - m² m³ (units with powers)
 
-Return the results in this exact JSON format:
+4. MATHEMATICAL NOTATION RULES:
+   - Fractions: Write as "a/b" (e.g., "2/3", "√2/√3")
+   - Square roots: Use √ symbol (e.g., "√2", "√6")
+   - Cube roots: Use ∛ symbol (e.g., "3∛6")
+   - Powers: Use superscript (e.g., "3°", "m²")
+   - Mixed expressions: Keep numbers and letters together (e.g., "4ab")
+
+5. QUESTION LABELS: Look for "주1", "주2", "주3", "주4", "주5", "주6", "주7"
+
+6. ACCURACY PRIORITY:
+   - Mathematical symbols are MORE important than regular text
+   - If uncertain about a symbol, use the closest mathematical symbol
+   - Maintain exact spacing and grouping of mathematical expressions
+
+Extract all handwritten mathematical expressions from each question box.
+
+Return results in this EXACT JSON format:
 {
     "answers": [
         {
             "question_number": 1,
             "question_label": "주1",
-            "extracted_text": "handwritten Korean text",
-            "confidence": 0.85
+            "extracted_text": "mathematical expression with proper symbols",
+            "confidence": 0.95
         }
     ]
 }
+
+EXAMPLE MATHEMATICAL EXPRESSIONS:
+- "19.38" (decimal number)
+- "√2/√3" (square root fraction)  
+- "3∛6" (number with cube root)
+- "3°" (degree measure)
+- "5/3<m²" (inequality with unit)
+- "√6×9/3" (complex expression with root, multiplication, division)
+- "4ab" (algebraic expression)
 """
 
 
@@ -82,7 +126,7 @@ def create_gemini_vision_model(api_key: str) -> ChatGoogleGenerativeAI:
     return ChatGoogleGenerativeAI(
         model="gemini-2.0-flash-exp",  # Vision 지원 모델
         google_api_key=api_key,
-        temperature=0.1,  # 정확성 우선
+        temperature=0.0,  # 최대 정확성 (수학 기호 인식)
         max_output_tokens=8000,
     )
 
@@ -185,8 +229,7 @@ async def process_text_recognition_with_gemini(
             
             # 파싱 실패 시 기본값 반환
             return TextRecognitionParsingResponse(
-                answers=[],
-                detected_questions=0
+                answers=[]
             )
     
     except Exception as e:
@@ -197,7 +240,7 @@ async def process_text_recognition_with_gemini(
         )
 
 
-def calculate_average_confidence(answers: List[TextRecognitionAnswer]) -> float:
+def calculate_average_confidence(answers: list[TextRecognitionAnswer]) -> float:
     """
     답안들의 평균 신뢰도 계산
     
@@ -214,9 +257,9 @@ def calculate_average_confidence(answers: List[TextRecognitionAnswer]) -> float:
 
 
 def filter_low_confidence_answers(
-    answers: List[TextRecognitionAnswer], 
+    answers: list[TextRecognitionAnswer], 
     min_confidence: float = 0.3
-) -> List[TextRecognitionAnswer]:
+) -> list[TextRecognitionAnswer]:
     """
     낮은 신뢰도 답안 필터링
     
@@ -225,12 +268,12 @@ def filter_low_confidence_answers(
         min_confidence: 최소 신뢰도 임계값
         
     Returns:
-        List[TextRecognitionAnswer]: 필터링된 답안 리스트
+        list[TextRecognitionAnswer]: 필터링된 답안 리스트
     """
     return [answer for answer in answers if answer.confidence >= min_confidence]
 
 
-def get_text_recognition_quality_metrics(answers: List[TextRecognitionAnswer]) -> dict:
+def get_text_recognition_quality_metrics(answers: list[TextRecognitionAnswer]) -> dict:
     """
     글자인식 품질 메트릭 계산
     

@@ -13,7 +13,8 @@
 
 import asyncio
 import time
-from typing import List, Optional
+
+from typing import Any
 from uuid import UUID
 from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse
@@ -240,7 +241,7 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
         ),
         use_cache: bool = True,
         use_content_hash: bool = False
-    ):
+    ) -> TextRecognitionAnswerResponse | JSONResponse:
         """
         한국어 답안지 글자인식 처리
         
@@ -291,11 +292,12 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
                 )
                 return JSONResponse(
                     status_code=400,
-                    content=OCRErrorResponse(
+                    content=TextRecognitionErrorResponse(
                         error_code="IMAGE_VALIDATION_FAILED",
                         error_message=str(e),
                         details=f"파일명: {file.filename}, 해시: {image_hash[:16]}"
-                    ).model_dump()
+                    ).model_dump_json(),
+                    media_type="application/json"
                 )
             
             # 4. 이미지 최적화
@@ -337,7 +339,8 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
                     error_code="INTERNAL_ERROR",
                     error_message="글자인식 처리 중 내부 오류가 발생했습니다.",
                     details=str(e) if settings.debug else None
-                ).model_dump()
+                ).model_dump_json(),
+                media_type="application/json"
             )
     
     @router.post(
@@ -346,9 +349,9 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
         description="여러 답안지를 동시에 처리하는 배치 글자인식 엔드포인트"
     )
     async def process_batch_text_recognition(
-        files: List[UploadFile] = File(...),
+        files: list[UploadFile] = File(...),
         priority: int = 1
-    ):
+    ) -> dict[str, str | int]:
         """
         배치 글자인식 처리 엔드포인트
         
@@ -409,7 +412,7 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
         summary="배치 글자인식 진행률 스트리밍",
         description="Server-Sent Events를 통한 실시간 배치 처리 진행률"
     )
-    async def stream_batch_progress(batch_id: UUID):
+    async def stream_batch_progress(batch_id: UUID) -> EventSourceResponse:
         """
         배치 글자인식 진행률 스트리밍 (SSE)
         
@@ -453,7 +456,7 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
     )
     async def get_text_recognition_metrics(
         time_range_minutes: int = 60
-    ):
+    ) -> dict[str, Any]:
         """
         글자인식 성능 메트릭 조회
         
@@ -502,7 +505,7 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
         summary="글자인식 대시보드 데이터",
         description="모니터링 대시보드용 종합 데이터"
     )
-    async def get_dashboard_data():
+    async def get_dashboard_data() -> dict[str, Any]:
         """글자인식 대시보드용 종합 데이터"""
         return metrics_collector.get_dashboard_data()
     
@@ -512,9 +515,9 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
         description="특정 이미지 또는 전체 글자인식 캐시 무효화"
     )
     async def invalidate_cache(
-        image_hash: Optional[str] = None,
+        image_hash: str | None = None,
         invalidate_all: bool = False
-    ):
+    ) -> dict[str, str | int]:
         """
         글자인식 캐시 무효화
         
@@ -554,7 +557,7 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
         summary="글자인식 서비스 상태 확인",
         description="향상된 헬스체크 (서킷 브레이커, 캐시, 메트릭 포함)"
     )
-    async def text_recognition_health_check():
+    async def text_recognition_health_check() -> JSONResponse:
         """글자인식 서비스 종합 헬스체크"""
         try:
             # 기본 Gemini API 확인
