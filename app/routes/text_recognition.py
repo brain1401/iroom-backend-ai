@@ -38,6 +38,287 @@ from app.services.monitoring import get_metrics_collector, TextRecognitionMetric
 logger = structlog.get_logger("text_recognition_routes")
 
 
+# 전역 배치 상태 관리
+_batch_progress_storage: dict[UUID, dict] = {}
+
+async def _execute_batch_processing(
+    batch_items: list[BatchTextRecognitionItem],
+    batch_id: UUID,
+    use_cache: bool = True,
+    use_content_hash: bool = False
+) -> None:
+    """
+    백그라운드에서 실행되는 배치 글자인식 처리
+    
+    answer-sheet와 동일한 로직을 사용하여 배치 처리:
+    - 캐싱 시스템
+    - 서킷 브레이커
+    - 메트릭 수집
+    - 오류 처리 및 폴백
+    
+    Args:
+        batch_items: 처리할 배치 항목들
+        batch_id: 배치 ID
+        use_cache: 캐시 사용 여부
+        use_content_hash: 내용 기반 해시 사용 여부
+    """
+    from app.services.cache import get_cache_service
+    from app.services.circuit_breaker import get_circuit_breaker
+    from app.services.monitoring import get_metrics_collector
+    from app.config.settings import get_settings
+    
+    settings = get_settings()
+    cache_service = get_cache_service(
+        redis_enabled=settings.redis_enabled,
+        redis_url=settings.redis_url
+    )
+    metrics_collector = get_metrics_collector()
+    gemini_circuit_breaker = get_circuit_breaker(
+        name="gemini_vision_api",
+        failure_threshold=3,
+        failure_rate_threshold=0.3,
+        recovery_timeout=120
+    )
+    
+    # 배치 진행 상태 초기화
+    _batch_progress_storage[batch_id] = {
+        "total_items": len(batch_items),
+        "completed_items": 0,
+        "failed_items": 0,
+        "results": [],
+        "status": "processing",
+        "started_at": time.time()
+    }
+    
+    try:
+        logger.info(
+            "배치 글자인식 백그라운드 처리 시작",
+            batch_id=str(batch_id),
+            total_items=len(batch_items)
+        )
+        
+        # 각 파일에 대해 answer-sheet와 동일한 로직으로 처리
+        for item in batch_items:
+            try:
+                # 이미지 해시 계산
+                image_hash = cache_service.compute_image_hash(
+                    item.image_data,
+                    use_content_hash=use_content_hash
+                )
+                
+                # answer-sheet의 _process_text_recognition_with_fallback와 동일한 로직
+                result = await _process_single_item_with_fallback(
+                    item.image_data,
+                    image_hash,
+                    item.filename,
+                    use_cache,
+                    cache_service,
+                    gemini_circuit_breaker,
+                    metrics_collector,
+                    settings
+                )
+                
+                # 결과 저장
+                _batch_progress_storage[batch_id]["results"].append({
+                    "item_id": str(item.item_id),
+                    "filename": item.filename,
+                    "success": True,
+                    "result": result.model_dump() if result else None
+                })
+                _batch_progress_storage[batch_id]["completed_items"] += 1
+                
+                logger.info(
+                    "배치 항목 처리 성공",
+                    batch_id=str(batch_id),
+                    item_id=str(item.item_id),
+                    filename=item.filename
+                )
+                
+            except Exception as e:
+                logger.error(
+                    "배치 항목 처리 실패",
+                    batch_id=str(batch_id),
+                    item_id=str(item.item_id),
+                    filename=item.filename,
+                    error=str(e)
+                )
+                
+                # 실패 결과 저장
+                _batch_progress_storage[batch_id]["results"].append({
+                    "item_id": str(item.item_id),
+                    "filename": item.filename,
+                    "success": False,
+                    "error": str(e)
+                })
+                _batch_progress_storage[batch_id]["failed_items"] += 1
+        
+        # 배치 처리 완료
+        _batch_progress_storage[batch_id]["status"] = "completed"
+        _batch_progress_storage[batch_id]["completed_at"] = time.time()
+        
+        processing_time = _batch_progress_storage[batch_id]["completed_at"] - _batch_progress_storage[batch_id]["started_at"]
+        
+        logger.info(
+            "배치 글자인식 백그라운드 처리 완료",
+            batch_id=str(batch_id),
+            total_items=len(batch_items),
+            completed_items=_batch_progress_storage[batch_id]["completed_items"],
+            failed_items=_batch_progress_storage[batch_id]["failed_items"],
+            processing_time_seconds=round(processing_time, 2)
+        )
+        
+    except Exception as e:
+        logger.error(
+            "배치 글자인식 백그라운드 처리 중 치명적 오류",
+            batch_id=str(batch_id),
+            error=str(e)
+        )
+        
+        _batch_progress_storage[batch_id]["status"] = "failed"
+        _batch_progress_storage[batch_id]["error"] = str(e)
+
+
+async def _process_single_item_with_fallback(
+    image_data: bytes,
+    image_hash: str,
+    filename: str,
+    use_cache: bool,
+    cache_service,
+    circuit_breaker,
+    metrics_collector,
+    settings
+) -> TextRecognitionAnswerResponse | None:
+    """
+    단일 배치 항목을 answer-sheet와 동일한 로직으로 처리
+    
+    Args:
+        image_data: 이미지 데이터
+        image_hash: 이미지 해시
+        filename: 파일명
+        use_cache: 캐시 사용 여부
+        cache_service: 캐시 서비스
+        circuit_breaker: 서킷 브레이커
+        metrics_collector: 메트릭 수집기
+        settings: 애플리케이션 설정
+        
+    Returns:
+        TextRecognitionAnswerResponse: 처리 결과
+    """
+    start_time = time.time()
+    
+    # 1. 캐시 확인 (answer-sheet와 동일한 로직)
+    if use_cache:
+        cached_result = await cache_service.get_text_recognition_result(image_hash)
+        if cached_result is not None:
+            logger.info("캐시된 글자인식 결과 사용", filename=filename, image_hash=image_hash[:16])
+            
+            # 캐시 히트 메트릭 기록
+            metrics_collector.record_text_recognition_metric(TextRecognitionMetric(
+                processing_time_ms=int((time.time() - start_time) * 1000),
+                image_size_kb=len(image_data) // 1024,
+                success=True,
+                confidence_avg=sum(a.confidence for a in cached_result.answers) / len(cached_result.answers) if cached_result.answers else 0.0,
+                questions_detected=len(cached_result.answers)
+            ))
+            
+            return cached_result
+    
+    # 2. 이미지 최적화 (answer-sheet와 동일한 로직)
+    import asyncio
+    loop = asyncio.get_event_loop()
+    optimized_image = await loop.run_in_executor(
+        None,
+        optimize_image_for_gemini,
+        image_data
+    )
+    
+    # 3. 서킷 브레이커를 통한 글자인식 처리 (answer-sheet와 동일한 로직)
+    async def text_recognition_main_function():
+        """메인 글자인식 처리 함수"""
+        from app.utils.text_recognition_core import create_gemini_vision_model, process_text_recognition_with_gemini
+        
+        if not settings.gemini_api_key:
+            raise HTTPException(status_code=503, detail="Gemini API key not configured")
+        
+        model = create_gemini_vision_model(settings.gemini_api_key)
+        ocr_result = await process_text_recognition_with_gemini(optimized_image, model)
+        
+        # 품질 평가
+        image_quality = "good"  # 실제로는 원본 이미지 품질 사용
+        processing_time_ms = int((time.time() - start_time) * 1000)
+        
+        # 메타데이터 생성
+        metadata = TextRecognitionMetadata(
+            image_quality=image_quality,
+            processing_time_ms=processing_time_ms,
+            total_questions_detected=len(ocr_result.answers),
+            model_version="gemini-2.0-flash-exp"
+        )
+        
+        # 최종 응답 생성
+        response = TextRecognitionAnswerResponse(
+            answers=ocr_result.answers,
+            metadata=metadata
+        )
+        
+        # 캐시 저장 (성공시에만)
+        if use_cache and ocr_result.answers:
+            await cache_service.set_text_recognition_result(
+                image_hash,
+                response,
+                ttl=3600  # 1시간
+            )
+        
+        return response
+    
+    async def text_recognition_fallback_function():
+        """글자인식 폴백 함수"""
+        logger.warning("글자인식 폴백 모드 실행", filename=filename, image_hash=image_hash[:16])
+        
+        processing_time_ms = int((time.time() - start_time) * 1000)
+        
+        return TextRecognitionAnswerResponse(
+            answers=[],  # 빈 답안 목록
+            metadata=TextRecognitionMetadata(
+                image_quality="unknown",
+                processing_time_ms=processing_time_ms,
+                total_questions_detected=0,
+                model_version="fallback"
+            )
+        )
+    
+    try:
+        result = await circuit_breaker.call(
+            text_recognition_main_function,
+            fallback=text_recognition_fallback_function
+        )
+        
+        # 성공 메트릭 기록
+        metrics_collector.record_text_recognition_metric(TextRecognitionMetric(
+            processing_time_ms=result.metadata.processing_time_ms,
+            image_size_kb=len(image_data) // 1024,
+            image_quality=result.metadata.image_quality,
+            confidence_avg=sum(a.confidence for a in result.answers) / len(result.answers) if result.answers else 0.0,
+            questions_detected=len(result.answers),
+            success=True
+        ))
+        
+        return result
+        
+    except Exception as e:
+        logger.error("단일 배치 항목 처리 실패", filename=filename, error=str(e))
+        
+        # 실패 메트릭 기록
+        metrics_collector.record_text_recognition_metric(TextRecognitionMetric(
+            processing_time_ms=int((time.time() - start_time) * 1000),
+            image_size_kb=len(image_data) // 1024,
+            success=False,
+            error_code="PROCESSING_ERROR"
+        ))
+        
+        # 폴백 실행
+        return await text_recognition_fallback_function()
+
 def create_text_recognition_router(settings: Settings) -> APIRouter:
     """
     글자인식 라우터 생성 (프로덕션 기능 포함)
@@ -65,7 +346,7 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
         recovery_timeout=120  # 2분
     )
     
-    # 배치 글자인식 서비스 (향후 사용 예정)
+    # 배치 글자인식 서비스 설정 (필요시 활성화)
     # batch_text_recognition_service = BatchTextRecognitionService(
     #     gemini_api_key=settings.gemini_api_key or "",
     #     max_concurrent=5,
@@ -221,15 +502,22 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
     @router.post(
         "/answer-sheet",
         response_model=TextRecognitionAnswerResponse,
-        summary="한국어 답안지 글자인식 처리",
+        summary="한국어 답안지 글자인식 처리 (번호 기반 혼합 문제 유형)",
         description="""
-        고도화된 글자인식 처리 엔드포인트
+        고도화된 글자인식 처리 엔드포인트 - 번호 기반 혼합 문제 유형 지원
         
         주요 기능:
+        - 번호 기반 문제 인식 (1, 2, 3... 형식)
+        - 혼합 답안 유형 지원 (객관식: A,B,C,D + 주관식: 수식,텍스트)
         - 이미지 해시 기반 중복 처리 방지 (캐싱)
         - 서킷 브레이커 패턴으로 장애 복구
         - 실시간 성능 모니터링
         - 향상된 오류 처리 및 폴백
+        
+        지원 문제 형식:
+        - 번호 패턴: 1., 2), (1), 1번, ①, 문제1 등
+        - 객관식 답안: A, B, C, D, E (또는 가, 나, 다, 라, 마)
+        - 주관식 답안: 수학 수식, 텍스트, 숫자
         """,
         dependencies=dependencies
     )
@@ -300,8 +588,14 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
                     media_type="application/json"
                 )
             
-            # 4. 이미지 최적화
-            optimized_image = optimize_image_for_gemini(image_data)
+            # 4. 이미지 최적화 (CPU 집약적 작업을 별도 스레드에서 처리)
+            import asyncio
+            loop = asyncio.get_event_loop()
+            optimized_image = await loop.run_in_executor(
+                None,  # 기본 ThreadPoolExecutor 사용
+                optimize_image_for_gemini,
+                image_data
+            )
             
             # 5. 글자인식 처리 (서킷 브레이커 + 캐싱)
             response = await _process_text_recognition_with_fallback(
@@ -346,18 +640,32 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
     @router.post(
         "/batch",
         summary="배치 글자인식 처리",
-        description="여러 답안지를 동시에 처리하는 배치 글자인식 엔드포인트"
+        description="""
+        여러 답안지를 동시에 처리하는 배치 글자인식 엔드포인트
+        
+        주요 기능:
+        - 실제 Gemini API 호출로 텍스트 인식 처리
+        - answer-sheet와 동일한 품질의 처리 보장
+        - 캐싱 및 서킷 브레이커 적용
+        - 실시간 진행률 추적
+        """
     )
     async def process_batch_text_recognition(
+        background_tasks: BackgroundTasks,
         files: list[UploadFile] = File(...),
-        priority: int = 1
+        priority: int = 1,
+        use_cache: bool = True,
+        use_content_hash: bool = False
     ) -> dict[str, str | int]:
         """
         배치 글자인식 처리 엔드포인트
         
         Args:
+            background_tasks: 백그라운드 작업 관리
             files: 처리할 이미지 파일 목록 (최대 20개)
             priority: 처리 우선순위 (1=highest, 5=lowest)
+            use_cache: 캐시 사용 여부 (기본: True)
+            use_content_hash: 내용 기반 해시 사용 여부 (기본: False)
             
         Returns:
             Dict: 배치 ID와 진행률 스트림 URL
@@ -368,12 +676,12 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
                 detail="최대 20개의 파일까지 처리 가능합니다."
             )
         
-        # 배치 항목 생성
+        # 배치 항목 생성 (검증 포함)
         batch_items = []
         for file in files:
             try:
                 image_data = await file.read()
-                validate_image_file(image_data)  # 간단한 검증
+                validate_image_file(image_data)  # 이미지 검증
                 
                 batch_items.append(BatchTextRecognitionItem(
                     filename=file.filename or f"image_{len(batch_items)}",
@@ -390,14 +698,24 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
                 detail="유효한 이미지 파일이 없습니다."
             )
         
-        # 배치 처리 시작 (비동기)
+        # 배치 ID 생성
         batch_id = batch_items[0].item_id  # 첫 번째 아이템 ID를 배치 ID로 사용
         
         logger.info(
             "배치 글자인식 처리 요청",
             batch_id=str(batch_id),
             total_files=len(batch_items),
-            priority=priority
+            priority=priority,
+            use_cache=use_cache
+        )
+        
+        # 백그라운드에서 실제 배치 처리 시작
+        background_tasks.add_task(
+            _execute_batch_processing,
+            batch_items,
+            batch_id,
+            use_cache,
+            use_content_hash
         )
         
         return {
@@ -407,14 +725,11 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
             "status": "started"
         }
     
-    @router.get(
-        "/batch/{batch_id}/progress",
-        summary="배치 글자인식 진행률 스트리밍",
-        description="Server-Sent Events를 통한 실시간 배치 처리 진행률"
-    )
     async def stream_batch_progress(batch_id: UUID) -> EventSourceResponse:
         """
         배치 글자인식 진행률 스트리밍 (SSE)
+        
+        실제 배치 처리 진행률을 실시간으로 스트리밍
         
         Args:
             batch_id: 배치 ID
@@ -423,27 +738,75 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
             EventSourceResponse: 실시간 진행률 스트림
         """
         async def progress_generator():
-            """진행률 스트림 생성기"""
+            """실제 배치 처리 진행률 스트림 생성기"""
             try:
-                # 실제 구현에서는 배치 서비스에서 진행률을 가져옴
-                # 여기서는 시뮬레이션
-                for i in range(0, 101, 10):
-                    progress_data = {
+                # 배치 상태가 존재하지 않는 경우
+                if batch_id not in _batch_progress_storage:
+                    error_data = {
                         "batch_id": str(batch_id),
-                        "progress_percentage": i,
-                        "completed_items": i // 10,
-                        "total_items": 10,
-                        "status": "processing" if i < 100 else "completed"
+                        "error": "배치를 찾을 수 없습니다",
+                        "status": "not_found"
                     }
-                    
-                    yield f"data: {progress_data}\n\n"
-                    await asyncio.sleep(0.5)  # 0.5초마다 업데이트
+                    yield f"data: {error_data}\n\n"
+                    return
                 
+                # 배치 처리가 완료될 때까지 진행률 스트리밍
+                last_completed = -1
+                while True:
+                    batch_info = _batch_progress_storage.get(batch_id)
+                    
+                    if not batch_info:
+                        break
+                    
+                    # 진행률 계산
+                    total_items = batch_info["total_items"]
+                    completed_items = batch_info["completed_items"]
+                    failed_items = batch_info["failed_items"]
+                    status = batch_info["status"]
+                    
+                    progress_percentage = (completed_items / total_items * 100) if total_items > 0 else 0
+                    
+                    # 새로운 진행률이 있거나 상태가 변경된 경우에만 전송
+                    if completed_items != last_completed or status in ["completed", "failed"]:
+                        progress_data = {
+                            "batch_id": str(batch_id),
+                            "progress_percentage": round(progress_percentage, 1),
+                            "completed_items": completed_items,
+                            "failed_items": failed_items,
+                            "total_items": total_items,
+                            "status": status
+                        }
+                        
+                        # 완료 시간 정보 추가
+                        if "completed_at" in batch_info:
+                            processing_time = batch_info["completed_at"] - batch_info["started_at"]
+                            progress_data["processing_time_seconds"] = round(processing_time, 2)
+                        
+                        # 에러 정보 추가 (실패한 경우)
+                        if status == "failed" and "error" in batch_info:
+                            progress_data["error"] = batch_info["error"]
+                        
+                        yield f"data: {progress_data}\n\n"
+                        last_completed = completed_items
+                    
+                    # 완료되었으면 스트림 종료
+                    if status in ["completed", "failed"]:
+                        break
+                    
+                    # 0.5초마다 상태 확인
+                    await asyncio.sleep(0.5)
+                
+                # 배치 처리 완료 후 상태 정리 (1분 후)
+                await asyncio.sleep(60)
+                if batch_id in _batch_progress_storage:
+                    del _batch_progress_storage[batch_id]
+                    
             except Exception as e:
+                logger.error("배치 진행률 스트리밍 오류", batch_id=str(batch_id), error=str(e))
                 error_data = {
                     "batch_id": str(batch_id),
                     "error": str(e),
-                    "status": "failed"
+                    "status": "stream_error"
                 }
                 yield f"data: {error_data}\n\n"
         

@@ -3,9 +3,11 @@
 배치 시험 이미지 글자 인식 테스터
 
 test_exam_image 폴더의 모든 exam*.jpg 파일들을 자동으로 찾아서
-글자 인식 API 엔드포인트를 통해 테스트하고 결과를 수집하는 스크립트
+번호 기반 혼합 문제 유형 글자 인식 API를 통해 테스트하고 결과를 수집하는 스크립트
 
 주요 기능:
+- 번호 기반 문제 인식 (1, 2, 3... 형식) 테스트
+- 혼합 답안 유형 검증 (객관식: A,B,C,D + 주관식: 수식,텍스트)
 - 자동 이미지 파일 검색 및 배치 처리
 - 비동기 HTTP 클라이언트를 통한 병렬 처리
 - 실시간 진행 상황 표시 및 상세 로깅
@@ -447,7 +449,7 @@ class BatchExamImageTester:
                         question_label = answer.get('question_label', f'문제{i}')
                         extracted_text = answer.get('extracted_text', '')
                         confidence = answer.get('confidence', 0)
-                        console.print(f"  • {question_label}: '{extracted_text}' (신뢰도: {confidence:.2f})")
+                            console.print(f"  • 문제 {question_label}: '{extracted_text}' (신뢰도: {confidence:.2f})")
     
     def save_results(self, summary: BatchTestSummary, output_base_dir: str = "tests/results") -> Path:
         """
@@ -680,5 +682,10 @@ async def main():
         logger.exception("배치 테스트 실행 오류")
 
 
-if __name__ == "__main__":
+def cli_main():
+    """CLI 진입점 - uv run에서 호출되는 동기 함수"""
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    cli_main()

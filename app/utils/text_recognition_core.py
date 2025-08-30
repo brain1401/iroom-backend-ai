@@ -2,11 +2,13 @@
 글자인식 핵심 기능 모듈
 
 한국어 답안지 글자인식 처리를 위한 공통 함수들
+번호 기반 혼합 문제 유형 지원 (객관식 + 주관식)
 
 주요 기능:
 - Gemini Vision API를 통한 글자인식 처리
-- 글자인식 프롬프트 생성
-- 응답 파싱 및 검증
+- 번호 기반 문제 인식 프롬프트 생성
+- 혼합 답안 유형 파싱 및 검증
+- 수학 기호 특화 인식
 """
 
 import json
@@ -36,26 +38,28 @@ class TextRecognitionParsingResponse(BaseModel):
 
 def create_text_recognition_prompt() -> str:
     """
-    한국어 수학 답안지 글자인식 처리용 고도화된 프롬프트 생성
+    한국어 답안지 글자인식 처리용 고도화된 프롬프트 생성
     
-    수학 기호 특화 인식:
-    - √ (제곱근), ∛ (세제곱근) 
-    - ° (도), ² (제곱), ³ (세제곱)
-    - × (곱셈), ÷ (나눗셈), / (분수)
-    - < > ≤ ≥ (부등호)
-    - 분수 표기 (a/b 형태)
-    - 혼합 표기 (숫자+문자)
+    번호 기반 문제 인식 시스템:
+    - 문제 번호: 1., 2), (1), 1번 등 다양한 번호 형식 지원
+    - 혼합 답안 유형: 객관식(A,B,C,D,E) + 주관식(수식/텍스트)
+    - 수학 기호 특화 인식 유지
+    - 유연한 문제 개수 (1-20개)
     
     Returns:
-        str: 수학 기호 특화 글자인식 프롬프트
+        str: 번호 기반 혼합 문제 유형 글자인식 프롬프트
     """
     return """
-You are an expert Korean mathematical handwriting recognition specialist for exam answer sheets.
+You are an expert Korean exam answer sheet recognition specialist for mixed question types.
 
 CRITICAL INSTRUCTIONS:
-1. This is a Korean mathematics exam answer sheet with 7 questions (주1 to 주7)
-2. Focus on MATHEMATICAL EXPRESSIONS including special symbols
-3. Pay special attention to these mathematical symbols:
+1. This is a Korean exam answer sheet with NUMBERED questions (not Korean labels)
+2. Look for various numbering patterns: 1., 2), (1), 1번, ①, etc.
+3. Support MIXED QUESTION TYPES:
+   - Multiple Choice: A, B, C, D, E (or 가, 나, 다, 라, 마)
+   - Subjective: Mathematical expressions, text answers, numerical values
+
+4. MATHEMATICAL SYMBOLS (for subjective questions):
    - √ (square root) - very important
    - ∛ (cube root) - very important  
    - ° (degree symbol)
@@ -65,42 +69,60 @@ CRITICAL INSTRUCTIONS:
    - < > ≤ ≥ (inequality symbols)
    - m² m³ (units with powers)
 
-4. MATHEMATICAL NOTATION RULES:
+5. QUESTION DETECTION PATTERNS:
+   - "1.", "2.", "3." (period after number)
+   - "1)", "2)", "3)" (parenthesis after number)  
+   - "(1)", "(2)", "(3)" (number in parentheses)
+   - "1번", "2번", "3번" (Korean numbering)
+   - "①", "②", "③" (circled numbers)
+   - "문제 1", "문제 2" (Korean question labels)
+
+6. ANSWER TYPE RECOGNITION:
+   - Multiple Choice: Single letters (A, B, C, D, E) or (가, 나, 다, 라, 마)
+   - Subjective: Mathematical expressions, equations, text, numbers
+   - Mixed format: "A) x=5" or "B) √2/3"
+
+7. MATHEMATICAL NOTATION RULES (for subjective answers):
    - Fractions: Write as "a/b" (e.g., "2/3", "√2/√3")
    - Square roots: Use √ symbol (e.g., "√2", "√6")
    - Cube roots: Use ∛ symbol (e.g., "3∛6")
    - Powers: Use superscript (e.g., "3°", "m²")
    - Mixed expressions: Keep numbers and letters together (e.g., "4ab")
 
-5. QUESTION LABELS: Look for "주1", "주2", "주3", "주4", "주5", "주6", "주7"
+8. ANSWER EXTRACTION RULES:
+   - For multiple choice: Extract just the letter (A, B, C, D, E)
+   - For subjective: Extract the complete mathematical expression or text
+   - For mixed: Extract the relevant answer part based on question type
 
-6. ACCURACY PRIORITY:
-   - Mathematical symbols are MORE important than regular text
-   - If uncertain about a symbol, use the closest mathematical symbol
-   - Maintain exact spacing and grouping of mathematical expressions
-
-Extract all handwritten mathematical expressions from each question box.
+Extract all answers from numbered questions. Support 1-20 questions flexibly.
 
 Return results in this EXACT JSON format:
 {
     "answers": [
         {
             "question_number": 1,
-            "question_label": "주1",
-            "extracted_text": "mathematical expression with proper symbols",
+            "question_label": "1",
+            "extracted_text": "A",
             "confidence": 0.95
+        },
+        {
+            "question_number": 2,
+            "question_label": "2", 
+            "extracted_text": "√2/√3",
+            "confidence": 0.90
         }
     ]
 }
 
-EXAMPLE MATHEMATICAL EXPRESSIONS:
-- "19.38" (decimal number)
-- "√2/√3" (square root fraction)  
-- "3∛6" (number with cube root)
-- "3°" (degree measure)
-- "5/3<m²" (inequality with unit)
-- "√6×9/3" (complex expression with root, multiplication, division)
-- "4ab" (algebraic expression)
+EXAMPLE ANSWER TYPES:
+- Multiple Choice: "A", "B", "C", "D", "E"
+- Korean Multiple Choice: "가", "나", "다", "라", "마"
+- Mathematical: "19.38", "√2/√3", "3∛6", "3°", "5/3<m²"
+- Algebraic: "4ab", "x²+2x+1", "sin(30°)"
+- Text: "정답", "해당없음", "증명생략"
+- Mixed: "A) x=5", "B) √2"
+
+IMPORTANT: question_label should be simple numbers: "1", "2", "3", etc.
 """
 
 

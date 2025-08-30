@@ -185,14 +185,123 @@ def encode_image_to_base64(image_data: bytes) -> str:
     return base64.b64encode(image_data).decode('utf-8')
 
 
+def compress_image_to_target_size(
+    image_data: bytes, 
+    target_size_mb: float = 18.0,
+    max_width: int = 2048,
+    max_height: int = 2048
+) -> bytes:
+    """
+    목표 크기에 맞춰 이미지를 동적으로 압축
+    
+    CPU 집약적 작업으로 FastAPI의 스레드풀에서 실행됨
+    
+    압축 전략:
+    1. 해상도 최적화 (max_width x max_height 이하)
+    2. 품질 조절을 통한 목표 크기 달성 (이진 탐색)
+    3. JPEG 변환으로 파일 크기 최적화
+    
+    Args:
+        image_data: 원본 이미지 데이터
+        target_size_mb: 목표 파일 크기 (MB)
+        max_width: 최대 너비
+        max_height: 최대 높이
+        
+    Returns:
+        bytes: 압축된 이미지 데이터
+    """
+    target_size_bytes = int(target_size_mb * 1024 * 1024)
+    original_size = len(image_data)
+    
+    try:
+        with Image.open(io.BytesIO(image_data)) as img:
+            # RGB 모드로 변환 (JPEG 호환성)
+            if img.mode in ('RGBA', 'LA', 'P'):
+                # 투명도가 있는 경우 흰색 배경과 합성
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                if img.mode == 'P':
+                    img = img.convert('RGBA')
+                background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
+                img = background
+            elif img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            original_dimensions = img.size
+            
+            # 해상도 최적화 (필요시)
+            width, height = img.size
+            if width > max_width or height > max_height:
+                # 종횡비 유지하며 축소
+                ratio = min(max_width / width, max_height / height)
+                new_width = int(width * ratio)
+                new_height = int(height * ratio)
+                img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                
+                logger.info(
+                    "해상도 축소",
+                    original=f"{width}x{height}",
+                    optimized=f"{new_width}x{new_height}",
+                    ratio=round(ratio, 3)
+                )
+            
+            # 품질 조절을 통한 목표 크기 달성 (이진 탐색)
+            min_quality = 30
+            max_quality = 95
+            best_quality = min_quality
+            
+            for _ in range(10):  # 최대 10회 반복
+                current_quality = (min_quality + max_quality) // 2
+                
+                # 현재 품질로 압축 테스트
+                temp_buffer = io.BytesIO()
+                img.save(temp_buffer, format='JPEG', quality=current_quality, optimize=True)
+                current_size = len(temp_buffer.getvalue())
+                
+                if current_size <= target_size_bytes:
+                    # 목표 크기 달성 - 더 높은 품질 시도
+                    best_quality = current_quality
+                    min_quality = current_quality + 1
+                else:
+                    # 목표 크기 초과 - 더 낮은 품질 시도
+                    max_quality = current_quality - 1
+                
+                if min_quality > max_quality:
+                    break
+            
+            # 최적 품질로 최종 압축
+            output_buffer = io.BytesIO()
+            img.save(output_buffer, format='JPEG', quality=best_quality, optimize=True)
+            compressed_data = output_buffer.getvalue()
+            
+            # 결과 로깅
+            compression_ratio = len(compressed_data) / original_size
+            logger.info(
+                "동적 압축 완료",
+                original_size_mb=round(original_size / 1024 / 1024, 1),
+                compressed_size_mb=round(len(compressed_data) / 1024 / 1024, 1),
+                compression_ratio=round(compression_ratio, 3),
+                quality=best_quality,
+                original_dimensions=f"{original_dimensions[0]}x{original_dimensions[1]}",
+                final_dimensions=f"{img.size[0]}x{img.size[1]}",
+                target_achieved=len(compressed_data) <= target_size_bytes
+            )
+            
+            return compressed_data
+            
+    except Exception as e:
+        logger.error("동적 압축 실패", error=str(e))
+        raise
+
+
 def optimize_image_for_gemini(image_data: bytes) -> bytes:
     """
-    Gemini API 최적화를 위한 이미지 전처리
+    Gemini API 최적화를 위한 지능형 이미지 전처리
     
-    최적화 작업:
-    1. JPEG 형식으로 변환 (API 효율성)
-    2. 과도한 해상도 축소 (토큰 절약)
-    3. 품질 최적화 (인식률 vs 파일크기)
+    자동 압축 조건:
+    - 파일 크기 > 15MB 또는 해상도 > 3000x3000
+    
+    일반 최적화 조건:
+    - 해상도 > 2048x2048
     
     Args:
         image_data: 원본 이미지 데이터
@@ -200,6 +309,34 @@ def optimize_image_for_gemini(image_data: bytes) -> bytes:
     Returns:
         bytes: 최적화된 이미지 데이터
     """
+    original_size_mb = len(image_data) / 1024 / 1024
+    
+    # 이미지 크기와 해상도 확인
+    try:
+        with Image.open(io.BytesIO(image_data)) as img:
+            width, height = img.size
+    except Exception as e:
+        logger.error("이미지 정보 읽기 실패", error=str(e))
+        return image_data
+    
+    # 자동 압축 조건 확인
+    needs_compression = (
+        original_size_mb > 15.0 or  # 15MB 초과
+        width > 3000 or height > 3000  # 고해상도
+    )
+    
+    if needs_compression:
+        logger.info(
+            "자동 압축 트리거",
+            original_size_mb=round(original_size_mb, 1),
+            resolution=f"{width}x{height}",
+            reason="size_limit" if original_size_mb > 15.0 else "high_resolution"
+        )
+        
+        # CPU 집약적 압축 작업 (스레드풀에서 실행)
+        return compress_image_to_target_size(image_data, target_size_mb=18.0)
+    
+    # 기존 최적화 로직 (가벼운 처리)
     try:
         with Image.open(io.BytesIO(image_data)) as img:
             # RGB 모드로 변환 (JPEG 호환성)
@@ -223,7 +360,7 @@ def optimize_image_for_gemini(image_data: bytes) -> bytes:
                 img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
                 
                 logger.info(
-                    "이미지 해상도 최적화",
+                    "기본 해상도 최적화",
                     original=f"{width}x{height}",
                     optimized=f"{new_width}x{new_height}",
                     ratio=round(ratio, 3)
@@ -236,7 +373,7 @@ def optimize_image_for_gemini(image_data: bytes) -> bytes:
             
             compression_ratio = len(optimized_data) / len(image_data)
             logger.info(
-                "이미지 최적화 완료",
+                "기본 최적화 완료",
                 original_size_kb=len(image_data) // 1024,
                 optimized_size_kb=len(optimized_data) // 1024,
                 compression_ratio=round(compression_ratio, 3)
@@ -245,5 +382,5 @@ def optimize_image_for_gemini(image_data: bytes) -> bytes:
             return optimized_data
             
     except Exception as e:
-        logger.warning("이미지 최적화 실패, 원본 사용", error=str(e))
+        logger.warning("기본 최적화 실패, 원본 사용", error=str(e))
         return image_data

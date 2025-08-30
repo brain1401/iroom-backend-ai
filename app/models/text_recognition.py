@@ -2,12 +2,17 @@
 글자인식 처리 데이터 모델
 
 한국어 답안지 글자인식 처리용 Pydantic 모델 정의
+번호 기반 혼합 문제 유형 지원 (객관식 + 주관식)
 
 주요 모델:
 - TextRecognitionAnswerRequest: 답안지 글자인식 요청
-- TextRecognitionAnswer: 개별 답안 정보
+- TextRecognitionAnswer: 개별 답안 정보 (번호 기반: 1, 2, 3...)
 - TextRecognitionAnswerResponse: 답안지 글자인식 응답
 - TextRecognitionMetadata: 글자인식 처리 메타데이터
+
+지원 문제 유형:
+- 객관식: A, B, C, D, E (또는 가, 나, 다, 라, 마)
+- 주관식: 수학 수식, 텍스트 답안, 숫자 답안
 """
 
 from datetime import datetime
@@ -21,24 +26,25 @@ class TextRecognitionAnswer(BaseModel):
     개별 답안 정보 모델
     
     필드:
-    - question_number: 문제 번호 (1-7)
-    - question_label: 문제 라벨 ("주1", "주2", ...)
-    - extracted_text: 추출된 텍스트 내용
+    - question_number: 문제 번호 (1-20)
+    - question_label: 문제 라벨 ("1", "2", "3"...)
+    - extracted_text: 추출된 텍스트 내용 (객관식: A,B,C,D / 주관식: 수식,텍스트)
     - confidence: 인식 신뢰도 (0.0-1.0)
     """
     question_number: int = Field(
         ...,
         ge=1, 
-        le=7,
-        description="문제 번호 (1부터 7까지)"
+        le=20,
+        description="문제 번호 (1부터 20까지)"
     )
     question_label: str = Field(
         ...,
-        description="문제 라벨 (주1, 주2, 주3, 주4, 주5, 주6, 주7)"
+        pattern=r"^\d{1,2}$",
+        description="문제 라벨 (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20)"
     )
     extracted_text: str = Field(
         ...,
-        description="글자인식으로 추출된 한국어 텍스트"
+        description="글자인식으로 추출된 답안 - 객관식(A,B,C,D,E) 또는 주관식(수식,텍스트)"
     )
     confidence: float = Field(
         ...,
@@ -85,7 +91,7 @@ class TextRecognitionAnswerResponse(BaseModel):
     필드:
     - sheet_id: 답안지 고유 식별자
     - processing_timestamp: 처리 완료 시각
-    - answers: 추출된 답안 목록
+    - answers: 추출된 답안 목록 (번호 기반 혼합 문제 유형 지원)
     - metadata: 처리 메타데이터
     """
     sheet_id: UUID = Field(
@@ -98,9 +104,9 @@ class TextRecognitionAnswerResponse(BaseModel):
     )
     answers: list[TextRecognitionAnswer] = Field(
         ...,
-        description="추출된 답안 목록",
+        description="추출된 답안 목록 - 번호 기반(1,2,3...) 혼합 문제 유형 지원",
         min_length=0,
-        max_length=7
+        max_length=20
     )
     metadata: TextRecognitionMetadata = Field(
         ...,

@@ -44,6 +44,7 @@ format = "app.scripts:format_code"
 typecheck = "app.scripts:typecheck"
 install = "app.scripts:install"
 check = "app.scripts:check"
+image_test = "tests.integration.batch_exam_image_tester:cli_main"
 
 
 [build-system]
