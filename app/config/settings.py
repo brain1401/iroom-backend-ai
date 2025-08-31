@@ -47,12 +47,14 @@ class Settings(BaseSettings):
     workers: int = Field(default=1, description="워커 프로세스 수")
 
     # Gemini API 구성
-    gemini_api_key: str | None = Field(
-        default=None, description="Google Gemini API 키"
+    gemini_api_key: str | None = Field(default=None, description="Google Gemini API 키")
+    gemini_model: str = Field(
+        default="gemini-2.5-pro", description="Gemini 모델명 (Vision 지원)"
     )
-    gemini_model: str = Field(default="gemini-2.0-flash-exp", description="Gemini 모델명 (Vision 지원)")
     gemini_max_tokens: int = Field(default=32000, description="요청당 최대 토큰 수")
-    gemini_temperature: float = Field(default=0.7, description="모델 온도 (창의성 수준)")
+    gemini_temperature: float = Field(
+        default=0.7, description="모델 온도 (창의성 수준)"
+    )
 
     # Rate Limiting 구성 (Gemini 2.5 Pro 제약 기준)
     rate_limit_requests_per_minute: int = Field(
@@ -73,15 +75,11 @@ class Settings(BaseSettings):
 
     # CORS 구성
     cors_origins: list[str] = Field(default=["*"], description="허용된 CORS 오리진")
-    cors_allow_credentials: bool = Field(
-        default=True, description="CORS 자격증명 허용"
-    )
+    cors_allow_credentials: bool = Field(default=True, description="CORS 자격증명 허용")
 
     # 인증 구성
     api_key_header: str = Field(default="x-api-key", description="API 키 헤더명")
-    require_api_key: bool = Field(
-        default=False, description="API 키 인증 필수 여부"
-    )
+    require_api_key: bool = Field(default=False, description="API 키 인증 필수 여부")
     valid_api_keys: list[str] = Field(default=[], description="유효한 API 키 목록")
 
     # 로깅 구성
@@ -92,61 +90,43 @@ class Settings(BaseSettings):
     health_check_enabled: bool = Field(
         default=True, description="헬스체크 엔드포인트 활성화"
     )
-    
+
     # OCR 전용 설정
-    ocr_cache_enabled: bool = Field(
-        default=True, description="OCR 결과 캐싱 활성화"
-    )
-    ocr_cache_ttl: int = Field(
-        default=3600, description="OCR 캐시 TTL (초)"
-    )
-    ocr_max_batch_size: int = Field(
-        default=20, description="배치 OCR 최대 파일 수"
-    )
+    ocr_cache_enabled: bool = Field(default=True, description="OCR 결과 캐싱 활성화")
+    ocr_cache_ttl: int = Field(default=3600, description="OCR 캐시 TTL (초)")
+    ocr_max_batch_size: int = Field(default=20, description="배치 OCR 최대 파일 수")
     ocr_circuit_breaker_enabled: bool = Field(
         default=True, description="OCR 서킷 브레이커 활성화"
     )
-    
+
     # 모니터링 설정
-    metrics_enabled: bool = Field(
-        default=True, description="메트릭 수집 활성화"
-    )
-    metrics_window_size: int = Field(
-        default=1000, description="메트릭 윈도우 크기"
-    )
-    alert_enabled: bool = Field(
-        default=True, description="알림 시스템 활성화"
-    )
-    
+    metrics_enabled: bool = Field(default=True, description="메트릭 수집 활성화")
+    metrics_window_size: int = Field(default=1000, description="메트릭 윈도우 크기")
+    alert_enabled: bool = Field(default=True, description="알림 시스템 활성화")
+
     # 성능 최적화 설정
-    max_concurrent_ocr: int = Field(
-        default=5, description="최대 동시 OCR 처리 수"
-    )
-    memory_cache_size_mb: int = Field(
-        default=100, description="메모리 캐시 크기 (MB)"
-    )
-    
+    max_concurrent_ocr: int = Field(default=5, description="최대 동시 OCR 처리 수")
+    memory_cache_size_mb: int = Field(default=100, description="메모리 캐시 크기 (MB)")
+
     # 데이터베이스 설정
     database_url: str = Field(
         default="mysql://user:password@localhost:3306/iroom_db",
-        description="데이터베이스 연결 URL"
+        description="데이터베이스 연결 URL",
     )
-    database_pool_size: int = Field(
-        default=10, description="데이터베이스 연결 풀 크기"
-    )
+    database_pool_size: int = Field(default=10, description="데이터베이스 연결 풀 크기")
     database_pool_timeout: int = Field(
         default=30, description="데이터베이스 연결 타임아웃 (초)"
     )
     database_enabled: bool = Field(
         default=True, description="데이터베이스 사용 여부 (False시 인메모리 모드)"
     )
-    
+
     # 채점 시스템 설정
     grading_max_concurrent_subjective: int = Field(
         default=3, description="주관식 동시 채점 최대 수"
     )
     grading_ai_model: str = Field(
-        default="gemini-2.0-flash-exp", description="채점용 AI 모델"
+        default="gemini-2.5-pro", description="채점용 AI 모델"
     )
     grading_confidence_threshold: float = Field(
         default=0.7, description="AI 채점 신뢰도 임계값 (이하시 수동 검토)"
