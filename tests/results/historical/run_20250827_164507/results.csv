@@ -1,2 +1,0 @@
-filename,success,processing_time_ms,answers_detected,confidence_avg,file_size_kb,error_message,retry_count,timestamp
-exam1.jpg,True,4742,7,0.9671428571428571,5683,,0,2025-08-27T16:45:07.522655
