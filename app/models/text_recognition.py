@@ -29,6 +29,7 @@ class TextRecognitionAnswer(BaseModel):
     - question_number: 문제 번호 (1-20)
     - question_label: 문제 라벨 ("1", "2", "3"...)
     - extracted_text: 추출된 텍스트 내용 (객관식: A,B,C,D / 주관식: 수식,텍스트)
+    - latex_formula: LaTeX 형식 수학 공식 (주관식 수학 문제만 해당)
     - confidence: 인식 신뢰도 (0.0-1.0)
     """
     question_number: int = Field(
@@ -45,6 +46,10 @@ class TextRecognitionAnswer(BaseModel):
     extracted_text: str = Field(
         ...,
         description="글자인식으로 추출된 답안 - 객관식(A,B,C,D,E) 또는 주관식(수식,텍스트)"
+    )
+    latex_formula: str | None = Field(
+        default=None,
+        description="LaTeX 형식 수학 공식 - 주관식 수학 답안인 경우에만 제공 (예: \\frac{\\sqrt{2}}{\\sqrt{3}})"
     )
     confidence: float = Field(
         ...,
