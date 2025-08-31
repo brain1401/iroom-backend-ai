@@ -23,12 +23,14 @@ dependencies = [
   "pillow>=10.0.0",
   "python-multipart>=0.0.6",
   "rich>=14.1.0",
+  "aiomysql>=0.1.1",
 ]
 
 [project.optional-dependencies]
 dev = [
   "langchain-cli>=0.0.15",
   "pytest>=7.0.0",
+  "pytest-asyncio>=0.21.0",
   "ruff>=0.1.0",
   "black>=23.0.0",
   "httpx>=0.24.0",
@@ -58,6 +60,7 @@ dev-dependencies = [
   "basedpyright>=1.31.2",
   "pytest>=8.4.1",
   "ruff>=0.12.9",
+  "pytest-asyncio>=1.1.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -66,6 +69,7 @@ packages = ["app"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+asyncio_mode = "auto"
 
 [tool.basedpyright]
 # 기본 설정

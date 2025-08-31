@@ -25,6 +25,7 @@ from app.middleware.logging import setup_logging
 from app.routes.health import setup_health_routes
 from app.routes.gemini import setup_gemini_routes
 from app.routes.text_recognition import setup_text_recognition_routes  # 글자인식 (메인)
+from app.routes.grading import setup_grading_routes
 from app.utils.errors import setup_error_handlers
 
 # Load environment variables early
@@ -73,6 +74,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     setup_health_routes(app, settings)
     setup_gemini_routes(app, settings)
     setup_text_recognition_routes(app, settings)  # 글자인식 (메인)
+    setup_grading_routes(app, settings)  # 채점 시스템
 
     # Setup error handlers (should be last)
     setup_error_handlers(app, settings)

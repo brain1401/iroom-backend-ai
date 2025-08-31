@@ -125,6 +125,32 @@ class Settings(BaseSettings):
     memory_cache_size_mb: int = Field(
         default=100, description="메모리 캐시 크기 (MB)"
     )
+    
+    # 데이터베이스 설정
+    database_url: str = Field(
+        default="mysql://user:password@localhost:3306/iroom_db",
+        description="데이터베이스 연결 URL"
+    )
+    database_pool_size: int = Field(
+        default=10, description="데이터베이스 연결 풀 크기"
+    )
+    database_pool_timeout: int = Field(
+        default=30, description="데이터베이스 연결 타임아웃 (초)"
+    )
+    database_enabled: bool = Field(
+        default=True, description="데이터베이스 사용 여부 (False시 인메모리 모드)"
+    )
+    
+    # 채점 시스템 설정
+    grading_max_concurrent_subjective: int = Field(
+        default=3, description="주관식 동시 채점 최대 수"
+    )
+    grading_ai_model: str = Field(
+        default="gemini-2.0-flash-exp", description="채점용 AI 모델"
+    )
+    grading_confidence_threshold: float = Field(
+        default=0.7, description="AI 채점 신뢰도 임계값 (이하시 수동 검토)"
+    )
 
 
 # 전역 설정 인스턴스
