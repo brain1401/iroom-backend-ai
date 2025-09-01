@@ -25,7 +25,7 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import structlog
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from app.config.settings import Settings
 
 
@@ -33,17 +33,34 @@ logger = structlog.get_logger("error_handler")
 
 
 class ErrorDetail(BaseModel):
-    """오류 상세 정보 모델"""
+    """
+    확장된 오류 상세 정보 모델
+    
+    도메인별 추가 필드를 지원하는 유연한 구조:
+    - 기본 오류 정보 (message, status_code, timestamp, code)
+    - 상세 정보 (details dict)
+    - 도메인별 확장 필드 지원
+    """
 
-    message: str
-    status_code: int
-    timestamp: str
-    code: str | None = None
-    details: dict[str, object] | None = None
+    message: str = Field(..., description="사용자 친화적 오류 메시지")
+    status_code: int = Field(..., description="HTTP 상태 코드")
+    timestamp: str = Field(..., description="오류 발생 시각 (ISO format)")
+    code: str | None = Field(default=None, description="애플리케이션별 오류 코드")
+    details: dict[str, object] | str | None = Field(default=None, description="상세 오류 정보")
+    
+    # 도메인별 확장 필드들 (Optional)
+    submission_id: str | None = Field(default=None, description="채점 관련 제출 ID")
+    file_name: str | None = Field(default=None, description="관련 파일명")
+    model_version: str | None = Field(default=None, description="AI 모델 버전")
 
 
 class ErrorResponse(BaseModel):
-    """표준화된 오류 응답 모델"""
+    """
+    통합된 표준화 오류 응답 모델
+    
+    모든 도메인(글자인식, 채점, Gemini API 등)에서 사용할 수 있는 
+    일관된 오류 응답 형식 제공
+    """
 
     error: ErrorDetail
 
@@ -86,6 +103,97 @@ class AuthenticationError(Exception):
 
     def __init__(self, message: str = "Authentication required"):
         self.message = message
+        super().__init__(self.message)
+
+
+class TextRecognitionError(Exception):
+    """글자인식 처리 전용 커스텀 예외"""
+
+    message: str
+    status_code: int
+    error_code: str
+    details: dict[str, object] | str | None
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int = 422,
+        error_code: str = "PROCESSING_ERROR",
+        details: dict[str, object] | str | None = None,
+    ):
+        self.message = message
+        self.status_code = status_code
+        self.error_code = error_code
+        self.details = details
+        super().__init__(self.message)
+
+
+class GradingError(Exception):
+    """채점 처리 전용 커스텀 예외"""
+
+    message: str
+    status_code: int
+    error_code: str
+    details: dict[str, object] | str | None
+    submission_id: str | None
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int = 422,
+        error_code: str = "GRADING_ERROR",
+        details: dict[str, object] | str | None = None,
+        submission_id: str | None = None,
+    ):
+        self.message = message
+        self.status_code = status_code
+        self.error_code = error_code
+        self.details = details
+        self.submission_id = submission_id
+        super().__init__(self.message)
+
+
+class ImageProcessingError(Exception):
+    """이미지 처리 전용 커스텀 예외"""
+
+    message: str
+    status_code: int
+    error_code: str
+    details: dict[str, object] | str | None
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int = 400,
+        error_code: str = "IMAGE_PROCESSING_ERROR",
+        details: dict[str, object] | str | None = None,
+    ):
+        self.message = message
+        self.status_code = status_code
+        self.error_code = error_code
+        self.details = details
+        super().__init__(self.message)
+
+
+class DatabaseError(Exception):
+    """데이터베이스 처리 전용 커스텀 예외"""
+
+    message: str
+    status_code: int
+    error_code: str
+    details: dict[str, object] | str | None
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int = 500,
+        error_code: str = "DATABASE_ERROR",
+        details: dict[str, object] | str | None = None,
+    ):
+        self.message = message
+        self.status_code = status_code
+        self.error_code = error_code
+        self.details = details
         super().__init__(self.message)
 
 
@@ -285,6 +393,112 @@ def setup_error_handlers(app: FastAPI, settings: Settings | None = None) -> None
             status_code=401,
             content=create_error_response(
                 status_code=401, message=exc.message, error_code="AUTHENTICATION_ERROR"
+            ),
+        )
+
+    @app.exception_handler(TextRecognitionError)
+    async def text_recognition_exception_handler(
+        request: Request, exc: TextRecognitionError
+    ) -> JSONResponse:
+        """글자인식 오류 처리"""
+        logger.error(
+            "Text recognition error",
+            message=exc.message,
+            error_code=exc.error_code,
+            details=exc.details,
+            url=str(request.url),
+            method=request.method,
+        )
+
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=create_error_response(
+                status_code=exc.status_code,
+                message=exc.message,
+                details=exc.details if isinstance(exc.details, dict) else {"info": exc.details},
+                error_code=exc.error_code,
+            ),
+        )
+
+    @app.exception_handler(GradingError)
+    async def grading_exception_handler(
+        request: Request, exc: GradingError
+    ) -> JSONResponse:
+        """채점 오류 처리"""
+        logger.error(
+            "Grading error",
+            message=exc.message,
+            error_code=exc.error_code,
+            details=exc.details,
+            submission_id=exc.submission_id,
+            url=str(request.url),
+            method=request.method,
+        )
+
+        details_dict: dict[str, object] = {}
+        if isinstance(exc.details, dict):
+            details_dict.update(exc.details)
+        elif exc.details is not None:
+            details_dict["info"] = exc.details
+            
+        if exc.submission_id:
+            details_dict["submission_id"] = exc.submission_id
+
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=create_error_response(
+                status_code=exc.status_code,
+                message=exc.message,
+                details=details_dict,
+                error_code=exc.error_code,
+            ),
+        )
+
+    @app.exception_handler(ImageProcessingError)
+    async def image_processing_exception_handler(
+        request: Request, exc: ImageProcessingError
+    ) -> JSONResponse:
+        """이미지 처리 오류 처리"""
+        logger.error(
+            "Image processing error",
+            message=exc.message,
+            error_code=exc.error_code,
+            details=exc.details,
+            url=str(request.url),
+            method=request.method,
+        )
+
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=create_error_response(
+                status_code=exc.status_code,
+                message=exc.message,
+                details=exc.details if isinstance(exc.details, dict) else {"info": exc.details},
+                error_code=exc.error_code,
+            ),
+        )
+
+    @app.exception_handler(DatabaseError)
+    async def database_exception_handler(
+        request: Request, exc: DatabaseError
+    ) -> JSONResponse:
+        """데이터베이스 오류 처리"""
+        logger.error(
+            "Database error",
+            message=exc.message,
+            error_code=exc.error_code,
+            details=exc.details,
+            url=str(request.url),
+            method=request.method,
+        )
+
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=create_error_response(
+                status_code=exc.status_code,
+                message=exc.message,
+                details=exc.details if isinstance(exc.details, dict) else {"info": exc.details},
+                error_code=exc.error_code,
             ),
         )
 

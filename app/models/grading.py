@@ -22,8 +22,12 @@
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from app.utils.errors import ErrorResponse
 
 
 class QuestionType(str, Enum):
@@ -255,7 +259,10 @@ class GradingRequest(BaseModel):
 
 class GradingErrorResponse(BaseModel):
     """
-    채점 오류 응답 모델
+    채점 오류 응답 모델 (호환성 래퍼)
+    
+    통합된 ErrorResponse 모델을 기반으로 하되,
+    기존 API 호환성을 유지하기 위한 래퍼 클래스
 
     필드:
     - error_code: 오류 코드
@@ -275,6 +282,55 @@ class GradingErrorResponse(BaseModel):
     timestamp: datetime = Field(
         default_factory=datetime.now, description="오류 발생 시각"
     )
+    
+    @classmethod
+    def from_error_response(
+        cls, 
+        error_response: "ErrorResponse",
+        error_code: str | None = None,
+        submission_id: UUID | None = None
+    ) -> "GradingErrorResponse":
+        """
+        통합 ErrorResponse에서 GradingErrorResponse 생성
+        
+        Args:
+            error_response: 통합 오류 응답 모델
+            error_code: 채점 전용 오류 코드 (선택적)
+            submission_id: 관련 제출 ID (선택적)
+        
+        Returns:
+            GradingErrorResponse: 호환성을 위한 응답 모델
+        """
+        from datetime import datetime
+        
+        return cls(
+            error_code=error_code or error_response.error.code or "GRADING_ERROR",
+            error_message=error_response.error.message,
+            details=str(error_response.error.details) if error_response.error.details else None,
+            submission_id=submission_id or (UUID(error_response.error.submission_id) if error_response.error.submission_id else None),
+            timestamp=datetime.fromisoformat(error_response.error.timestamp.replace('Z', '+00:00'))
+        )
+    
+    def to_error_response(self) -> "ErrorResponse":
+        """
+        통합 ErrorResponse로 변환
+        
+        Returns:
+            ErrorResponse: 표준화된 오류 응답
+        """
+        from app.utils.errors import ErrorResponse, ErrorDetail
+        from datetime import timezone
+        
+        return ErrorResponse(
+            error=ErrorDetail(
+                message=self.error_message,
+                status_code=422,  # 기본값
+                timestamp=self.timestamp.replace(tzinfo=timezone.utc).isoformat(),
+                code=self.error_code,
+                details=self.details,
+                submission_id=str(self.submission_id) if self.submission_id else None
+            )
+        )
 
 
 class BatchGradingRequest(BaseModel):

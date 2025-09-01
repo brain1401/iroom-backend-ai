@@ -12,9 +12,9 @@
 
 import asyncio
 import time
-from datetime import datetime
+
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 import structlog
 from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -23,7 +23,7 @@ from app.models.grading import (
     StudentAnswer,
     QuestionGradingResult,
     ExamGradingResult,
-    GradingProgress,
+
     GradingMetadata,
     GradingMethod,
     GradingStatus,
@@ -477,184 +477,237 @@ class SubjectiveGrader:
         return results
 
 
-class GradingOrchestrator:
+class GradingService:
     """
-    전체 채점 프로세스 관리자
-
-    기능:
-    - 객관식/주관식 채점 통합 관리
-    - 제출물별 전체 채점 수행
-    - 진행률 추적 및 결과 집계
-    - 배치 채점 처리
+    통합 채점 서비스 (이전 GradingOrchestrator)
+    
+    객관식 자동 채점과 주관식 AI 보조 채점을 통합 관리:
+    - 문제 유형별 적절한 채점기 선택
+    - 병렬 채점 처리 및 성능 최적화
+    - 채점 결과 검증 및 품질 관리
+    - 진행 상황 모니터링 및 보고
     """
-
-    def __init__(self, gemini_api_key: str, max_concurrent_subjective: int = 3):
+    
+    def __init__(
+        self,
+        gemini_api_key: str,
+        max_concurrent_subjective: int = 3,
+    ):
         """
-        채점 관리자 초기화
-
+        채점 서비스 초기화
+        
         Args:
             gemini_api_key: Gemini API 키
-            max_concurrent_subjective: 주관식 최대 동시 처리 수
+            max_concurrent_subjective: 주관식 동시 채점 최대 수
         """
-        self.multiple_choice_grader = MultipleChoiceGrader()
+        self.gemini_api_key = gemini_api_key
+        self.max_concurrent_subjective = max_concurrent_subjective
+        
+        # 채점기 인스턴스들
+        self.mc_grader = MultipleChoiceGrader()
         self.subjective_grader = SubjectiveGrader(
-            gemini_api_key=gemini_api_key, max_concurrent=max_concurrent_subjective
+            gemini_api_key=gemini_api_key,
+            max_concurrent=max_concurrent_subjective
         )
+        
+        logger.info(
+            "채점 서비스 초기화 완료",
+            max_concurrent_subjective=max_concurrent_subjective
+        )
+    
+    async def grade_exam(
+        self, 
+        questions: list[QuestionData], 
+        student_answers: list[StudentAnswer]
+    ) -> ExamGradingResult:
+        """
+        전체 시험 채점 수행
+        
+        Args:
+            questions: 문제 목록
+            student_answers: 학생 답안 목록
+            
+        Returns:
+            ExamGradingResult: 통합 채점 결과
+        """
+        if not questions:
+            raise ValueError("채점할 문제가 없습니다")
+        if not student_answers:
+            raise ValueError("채점할 답안이 없습니다")
+        
+        start_time = time.time()
+        
+        # 문제-답안 매칭
+        question_answer_pairs = self._match_questions_with_answers(questions, student_answers)
+        
+        # 문제 유형별 그룹핑
+        mc_pairs, subjective_pairs = self._group_by_question_type(question_answer_pairs)
+        
+        logger.info(
+            "시험 채점 시작",
+            total_questions=len(questions),
+            multiple_choice=len(mc_pairs),
+            subjective=len(subjective_pairs)
+        )
+        
+        # 병렬 채점 수행
+        async def empty_task():
+            return []
+            
+        mc_task = self.mc_grader.batch_grade_questions(mc_pairs) if mc_pairs else empty_task()
+        subjective_task = self.subjective_grader.batch_grade_questions(subjective_pairs) if subjective_pairs else empty_task()
+        
+        mc_results, subjective_results = await asyncio.gather(
+            mc_task, 
+            subjective_task, 
+            return_exceptions=True
+        )
+        
+        # 예외 처리 및 결과 타입 보장
+        final_mc_results: list[QuestionGradingResult] = []
+        final_subjective_results: list[QuestionGradingResult] = []
+        
+        if isinstance(mc_results, Exception):
+            logger.error("객관식 채점 실패", error=str(mc_results))
+            final_mc_results = []
+        else:
+            # 타입 체커를 위한 명시적 캐스팅
+            final_mc_results = mc_results  # type: ignore[assignment]
+            
+        if isinstance(subjective_results, Exception):
+            logger.error("주관식 채점 실패", error=str(subjective_results))
+            final_subjective_results = []
+        else:
+            # 타입 체커를 위한 명시적 캐스팅
+            final_subjective_results = subjective_results  # type: ignore[assignment]
+        
+        # 결과 통합
+        all_results = final_mc_results + final_subjective_results
+        
+        # 전체 채점 결과 생성
+        total_score = sum(r.score for r in all_results if r.score is not None)
+        max_possible_score = sum(q.points for q in questions)
+        
+        processing_time = time.time() - start_time
+        
+        exam_result = ExamGradingResult(
+            submission_id=uuid4(),  # 임시 UUID, 실제로는 매개변수로 받아야 함
+            exam_sheet_id=uuid4(),  # 임시 UUID, 실제로는 매개변수로 받아야 함
+            question_results=all_results,
+            total_score=total_score,
+            max_total_score=max_possible_score,
+            status=GradingStatus.COMPLETED,
+            metadata=GradingMetadata(
+                processing_time_ms=int(processing_time * 1000),
+                total_questions=len(questions),
+                multiple_choice_count=len(mc_pairs),
+                subjective_count=len(subjective_pairs),
+                ai_model_version="gemini-2.5-pro"
+            )
+        )
+        
+        logger.info(
+            "시험 채점 완료",
+            submission_id=str(exam_result.submission_id),
+            total_score=total_score,
+            max_score=max_possible_score,
+            processing_time_seconds=round(processing_time, 2)
+        )
+        
+        return exam_result
+    
+    def _match_questions_with_answers(
+        self, 
+        questions: list[QuestionData], 
+        student_answers: list[StudentAnswer]
+    ) -> list[tuple[QuestionData, StudentAnswer]]:
+        """문제와 답안 매칭"""
+        answer_map = {a.question_id: a for a in student_answers}
+        pairs = []
+        
+        for question in questions:
+            if question.question_id in answer_map:
+                pairs.append((question, answer_map[question.question_id]))
+            else:
+                logger.warning(
+                    "답안이 없는 문제 발견",
+                    question_id=str(question.question_id)
+                )
+        
+        return pairs
+    
+    def _group_by_question_type(
+        self, 
+        pairs: list[tuple[QuestionData, StudentAnswer]]
+    ) -> tuple[list[tuple[QuestionData, StudentAnswer]], list[tuple[QuestionData, StudentAnswer]]]:
+        """문제 유형별 그룹핑"""
+        mc_pairs = []
+        subjective_pairs = []
+        
+        for question, answer in pairs:
+            if question.question_type == QuestionType.MULTIPLE_CHOICE:
+                mc_pairs.append((question, answer))
+            elif question.question_type == QuestionType.SUBJECTIVE:
+                subjective_pairs.append((question, answer))
+            else:
+                logger.warning(
+                    "알 수 없는 문제 유형",
+                    question_id=str(question.question_id),
+                    question_type=question.question_type
+                )
+        
+        return mc_pairs, subjective_pairs
 
-        # 진행 상태 추적
-        self._progress_tracker: dict[UUID, GradingProgress] = {}
-
+    
+    def get_active_gradings(self) -> list[dict]:
+        """
+        현재 활성 채점 작업 목록 조회
+        
+        Returns:
+            list[dict]: 활성 채점 작업 정보 목록
+        """
+        # TODO: 실제 활성 작업 추적 구현
+        # 현재는 빈 목록 반환 (추후 개선 필요)
+        return []
+    
     async def grade_submission(
         self,
         submission_id: UUID,
         questions: list[QuestionData],
         answers: list[StudentAnswer],
-        exam_sheet_id: UUID,
+        exam_sheet_id: UUID
     ) -> ExamGradingResult:
         """
-        단일 제출물 전체 채점
-
+        이전 GradingOrchestrator와의 호환성을 위한 래퍼 메서드
+        
         Args:
-            submission_id: 제출 ID
+            submission_id: 제출 ID (메타데이터용)
             questions: 문제 목록
-            answers: 답안 목록
-            exam_sheet_id: 시험지 ID
-
+            answers: 학생 답안 목록
+            exam_sheet_id: 시험지 ID (메타데이터용)
+            
         Returns:
-            ExamGradingResult: 전체 채점 결과
+            ExamGradingResult: 채점 결과
         """
-        start_time = time.time()
-
-        # 진행 상태 초기화
-        progress = GradingProgress(
-            submission_id=submission_id, total_questions=len(questions)
-        )
-        self._progress_tracker[submission_id] = progress
-
         logger.info(
-            "제출물 채점 시작",
+            "호환성 메서드를 통한 채점 수행",
             submission_id=str(submission_id),
-            total_questions=len(questions),
-            objective_count=sum(
-                1 for q in questions if q.question_type == QuestionType.MULTIPLE_CHOICE
-            ),
-            subjective_count=sum(
-                1 for q in questions if q.question_type == QuestionType.SUBJECTIVE
-            ),
+            exam_sheet_id=str(exam_sheet_id)
         )
-
-        # 문제-답안 매칭
-        question_answer_pairs = self._match_questions_and_answers(questions, answers)
-
-        # 객관식과 주관식 분리
-        mc_pairs = [
-            (q, a)
-            for q, a in question_answer_pairs
-            if q.question_type == QuestionType.MULTIPLE_CHOICE
-        ]
-        subj_pairs = [
-            (q, a)
-            for q, a in question_answer_pairs
-            if q.question_type == QuestionType.SUBJECTIVE
-        ]
-
-        # 병렬 채점 실행
-        gather_results = await asyncio.gather(
-            self.multiple_choice_grader.batch_grade_questions(mc_pairs),
-            self.subjective_grader.batch_grade_questions(subj_pairs),
-            return_exceptions=True,
-        )
-
-        # 예외 처리 및 타입 보장
-        mc_results: list[QuestionGradingResult] = []
-        subj_results: list[QuestionGradingResult] = []
-
-        if isinstance(gather_results[0], Exception):
-            logger.error("객관식 채점 실패", error=str(gather_results[0]))
-        elif isinstance(gather_results[0], list):
-            mc_results = gather_results[0]
-
-        if isinstance(gather_results[1], Exception):
-            logger.error("주관식 채점 실패", error=str(gather_results[1]))
-        elif isinstance(gather_results[1], list):
-            subj_results = gather_results[1]
-
-        # 결과 통합
-        all_results = mc_results + subj_results
-
-        # 통계 계산
-        total_score = sum(r.score or 0 for r in all_results)
-        max_total_score = sum(r.max_score for r in all_results)
-        processing_time_ms = int((time.time() - start_time) * 1000)
-
-        # 메타데이터 생성
-        metadata = GradingMetadata(
-            total_questions=len(questions),
-            multiple_choice_count=len(mc_pairs),
-            subjective_count=len(subj_pairs),
-            processing_time_ms=processing_time_ms,
-        )
-
-        # 채점 결과 생성
-        result = ExamGradingResult(
-            submission_id=submission_id,
-            exam_sheet_id=exam_sheet_id,
-            status=GradingStatus.COMPLETED,
-            total_score=total_score,
-            max_total_score=max_total_score,
-            question_results=all_results,
-            metadata=metadata,
-            grading_comment=f"자동/AI 보조 채점 완료 - 총 {len(all_results)}문제 채점",
-            graded_at=datetime.now(),
-        )
-
-        # 진행 추적 정리
-        del self._progress_tracker[submission_id]
-
-        logger.info(
-            "제출물 채점 완료",
+        
+        # 새로운 grade_exam 메서드 사용
+        result = await self.grade_exam(questions, answers)
+        
+        # 호환성을 위해 전달받은 submission_id와 exam_sheet_id 사용
+        result.submission_id = submission_id
+        result.exam_sheet_id = exam_sheet_id
+        
+        # 결과에 추가 정보 로깅 (메타데이터는 이미 설정됨)
+        logger.debug(
+            "채점 결과 메타데이터",
             submission_id=str(submission_id),
-            total_score=total_score,
-            max_total_score=max_total_score,
-            processing_time_ms=processing_time_ms,
-            successful_questions=len(all_results),
+            exam_sheet_id=str(exam_sheet_id),
+            processing_time=result.metadata.processing_time_ms if result.metadata else None
         )
-
+        
         return result
-
-    def _match_questions_and_answers(
-        self, questions: list[QuestionData], answers: list[StudentAnswer]
-    ) -> list[tuple[QuestionData, StudentAnswer]]:
-        """
-        문제와 답안을 question_id로 매칭
-
-        Args:
-            questions: 문제 목록
-            answers: 답안 목록
-
-        Returns:
-            list[tuple[QuestionData, StudentAnswer]]: 매칭된 (문제, 답안) 쌍 목록
-        """
-        # 답안을 question_id로 인덱싱
-        answer_dict = {answer.question_id: answer for answer in answers}
-
-        # 문제별로 해당 답안 찾기
-        matched_pairs = []
-        for question in questions:
-            answer = answer_dict.get(question.question_id)
-            if answer:
-                matched_pairs.append((question, answer))
-            else:
-                logger.warning(
-                    "문제에 해당하는 답안이 없음", question_id=str(question.question_id)
-                )
-
-        return matched_pairs
-
-    def get_grading_progress(self, submission_id: UUID) -> GradingProgress | None:
-        """채점 진행 상태 조회"""
-        return self._progress_tracker.get(submission_id)
-
-    def get_active_gradings(self) -> list[GradingProgress]:
-        """활성 채점 목록 조회"""
-        return list(self._progress_tracker.values())

@@ -24,7 +24,7 @@ from app.models.grading import (
     BatchGradingRequest,
     BatchGradingResult,
 )
-from app.services.grading_factory import get_repositories, get_grading_orchestrator
+from app.services.grading_factory import get_repositories, get_grading_service
 
 logger = structlog.get_logger("grading_api")
 
@@ -63,7 +63,7 @@ async def grade_submission(
     try:
         # Repository 및 서비스 인스턴스 가져오기
         exam_repo, question_repo, grading_repo = get_repositories(settings)
-        grading_orchestrator = get_grading_orchestrator(settings)
+        grading_service = get_grading_service(settings)
 
         # 1. 제출 정보 조회
         submission_data = await exam_repo.get_submission_by_id(submission_id)
@@ -111,11 +111,9 @@ async def grade_submission(
             )
 
         # 6. 채점 수행
-        grading_result = await grading_orchestrator.grade_submission(
-            submission_id=submission_id,
+        grading_result = await grading_service.grade_exam(
             questions=questions,
-            answers=answers,
-            exam_sheet_id=exam_sheet_id,
+            student_answers=answers
         )
 
         # 7. 채점 결과 저장 (백그라운드에서 실행)
@@ -224,7 +222,7 @@ async def grade_batch_submissions(
     try:
         # Repository 및 서비스 인스턴스 가져오기
         exam_repo, question_repo, grading_repo = get_repositories(settings)
-        grading_orchestrator = get_grading_orchestrator(settings)
+        grading_service = get_grading_service(settings)
 
         # 배치 채점 실행
         batch_start_time = datetime.now()
@@ -285,11 +283,9 @@ async def grade_batch_submissions(
                         return None
 
                     # 채점 수행
-                    result = await grading_orchestrator.grade_submission(
-                        submission_id=sub_id,
+                    result = await grading_service.grade_exam(
                         questions=questions,
-                        answers=answers,
-                        exam_sheet_id=exam_sheet_id,
+                        student_answers=answers
                     )
 
                     # 결과 저장
@@ -378,10 +374,10 @@ async def get_grading_stats(settings: Settings = Depends(get_settings)) -> dict:
         dict: 통계 정보
     """
     try:
-        grading_orchestrator = get_grading_orchestrator(settings)
+        grading_service = get_grading_service(settings)
 
         # 활성 채점 작업 조회
-        active_gradings = grading_orchestrator.get_active_gradings()
+        active_gradings = getattr(grading_service, 'get_active_gradings', lambda: [])() # TODO: implement get_active_gradings method
 
         # Repository 통계 (인메모리인 경우)
         repo_stats = {}

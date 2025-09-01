@@ -11,7 +11,7 @@
 
 from typing import Tuple
 from app.config.settings import Settings
-from app.services.grading_service import GradingOrchestrator
+from app.services.grading_service import GradingService
 from app.repositories.interfaces import (
     ExamRepositoryInterface,
     QuestionRepositoryInterface,
@@ -100,20 +100,20 @@ class GradingServiceFactory:
         return exam_repo, question_repo, grading_repo
     
     @staticmethod
-    def create_grading_orchestrator(settings: Settings) -> GradingOrchestrator:
+    def create_grading_service(settings: Settings) -> GradingService:
         """
-        채점 관리자 인스턴스 생성
+        채점 서비스 인스턴스 생성
         
         Args:
             settings: 애플리케이션 설정
             
         Returns:
-            GradingOrchestrator: 초기화된 채점 관리자
+            GradingService: 초기화된 채점 서비스
         """
         if not settings.gemini_api_key:
             raise ValueError("Gemini API key is required for grading service")
         
-        return GradingOrchestrator(
+        return GradingService(
             gemini_api_key=settings.gemini_api_key,
             max_concurrent_subjective=settings.grading_max_concurrent_subjective
         )
@@ -126,7 +126,7 @@ _repositories: Tuple[
     GradingRepositoryInterface
 ] | None = None
 
-_grading_orchestrator: GradingOrchestrator | None = None
+_grading_service: GradingService | None = None
 
 
 def get_repositories(settings: Settings) -> Tuple[
@@ -151,22 +151,22 @@ def get_repositories(settings: Settings) -> Tuple[
     return _repositories
 
 
-def get_grading_orchestrator(settings: Settings) -> GradingOrchestrator:
+def get_grading_service(settings: Settings) -> GradingService:
     """
-    채점 관리자 인스턴스 반환 (싱글톤)
+    채점 서비스 인스턴스 반환 (싱글톤)
     
     Args:
         settings: 애플리케이션 설정
         
     Returns:
-        GradingOrchestrator: 채점 관리자 인스턴스
+        GradingService: 채점 서비스 인스턴스
     """
-    global _grading_orchestrator
+    global _grading_service
     
-    if _grading_orchestrator is None:
-        _grading_orchestrator = GradingServiceFactory.create_grading_orchestrator(settings)
+    if _grading_service is None:
+        _grading_service = GradingServiceFactory.create_grading_service(settings)
     
-    return _grading_orchestrator
+    return _grading_service
 
 
 async def cleanup_resources():
