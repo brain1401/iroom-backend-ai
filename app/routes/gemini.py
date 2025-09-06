@@ -7,7 +7,8 @@ LangServe 기반 Gemini Runnable 공개.
 from fastapi import FastAPI, Depends
 from fastapi.responses import RedirectResponse
 import structlog
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from typing import Any
 
 from langserve import add_routes
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -21,7 +22,15 @@ from app.middleware.auth import require_api_key
 logger = structlog.get_logger("gemini_routes")
 
 
-# 제거됨: GeminiRequest, GeminiResponse - LangServe는 간단한 str 체인 선호
+# LangServe OpenAPI 스키마 생성을 위한 명시적 타입 정의
+class GeminiInput(BaseModel):
+    """Gemini API 입력 모델"""
+    input: str = Field(..., description="처리할 텍스트 입력")
+
+
+class GeminiOutput(BaseModel):
+    """Gemini API 출력 모델"""
+    output: str = Field(..., description="처리된 텍스트 출력")
 
 
 class GeminiHealthResponse(BaseModel):
@@ -37,12 +46,12 @@ def _build_gemini_runnable(settings: Settings) -> Runnable:
     # API 키 미설정 시 요청마다 명확한 오류 발생 처리
     if not settings.gemini_api_key:
 
-        def _raise_on_call(input_text: str) -> str:
+        def _raise_on_call(input_dict: dict) -> dict:
             raise RuntimeError("Gemini API key not configured")
 
         return RunnableLambda(_raise_on_call)
 
-    # LangServe는 더 간단한 str -> str 체인 선호
+    # LangServe OpenAPI 스키마 생성을 위한 체인 구성
     model = ChatGoogleGenerativeAI(
         model=settings.gemini_model,
         google_api_key=settings.gemini_api_key,
@@ -50,8 +59,28 @@ def _build_gemini_runnable(settings: Settings) -> Runnable:
         max_output_tokens=settings.gemini_max_tokens,
     )
     
-    # 간단한 체인 구성: str 입력 -> 모델 호출 -> str 출력
-    chain = model | StrOutputParser()
+    # 입력 변환: dict -> str
+    def extract_input(input_dict: dict) -> str:
+        """입력 딕셔너리에서 문자열 추출"""
+        if isinstance(input_dict, dict):
+            return input_dict.get("input", "")
+        return str(input_dict)
+    
+    # 출력 변환: str -> dict
+    def format_output(output: str) -> dict:
+        """출력을 딕셔너리 형식으로 변환"""
+        return {"output": output}
+    
+    # 체인 구성: dict 입력 -> str 추출 -> 모델 호출 -> str 파싱 -> dict 출력
+    chain = (
+        RunnableLambda(extract_input) 
+        | model 
+        | StrOutputParser() 
+        | RunnableLambda(format_output)
+    ).with_types(
+        input_type=GeminiInput,
+        output_type=GeminiOutput
+    )
     
     return chain
 
@@ -77,7 +106,7 @@ def setup_gemini_routes(app: FastAPI, settings: Settings | None = None) -> None:
     if settings.require_api_key:
         dependencies.append(Depends(require_api_key))
 
-    # LangServe 라우터 추가 - 모든 엔드포인트 활성화
+    # LangServe 라우터 추가 - batch 엔드포인트 임시 비활성화 (Pydantic 2.11 호환성 문제)
     add_routes(
         app,
         runnable,
@@ -85,7 +114,7 @@ def setup_gemini_routes(app: FastAPI, settings: Settings | None = None) -> None:
         dependencies=dependencies,
         enabled_endpoints=[
             "invoke",
-            "batch",  # batch 엔드포인트 재활성화
+            # "batch",  # Pydantic 2.11 호환성 문제로 임시 비활성화
             "stream",
             "stream_log",
             "input_schema",
