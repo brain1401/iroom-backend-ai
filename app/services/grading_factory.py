@@ -51,10 +51,10 @@ class GradingServiceFactory:
             
             # DB 연결 URL 파싱
             db_url = settings.database_url
-            if db_url.startswith("mysql://"):
-                # mysql://user:password@host:port/database 형식 파싱
+            if db_url and (db_url.startswith("mysql://") or db_url.startswith("mysql+pymysql://")):
+                # mysql+pymysql://user:password@host:port/database 형식 파싱
                 import re
-                pattern = r"mysql://([^:]+):([^@]+)@([^:]+):(\d+)/(.+)"
+                pattern = r"mysql(?:\+pymysql)?://([^:]+):([^@]+)@([^:]+):(\d+)/(.+)"
                 match = re.match(pattern, db_url)
                 
                 if match:

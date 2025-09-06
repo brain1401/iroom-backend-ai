@@ -23,6 +23,8 @@ import structlog
 from app.models.grading import (
     QuestionData,
     StudentAnswer,
+    StudentAnswerSheet,
+    StudentAnswerSheetQuestion,
     ExamGradingResult, 
     QuestionGradingResult,
     GradingStatus
@@ -58,7 +60,10 @@ class InMemoryStorage:
         self.submissions: Dict[UUID, dict] = {}
         
         # 학생 답안 데이터 (student_answer_sheet 테이블 모방)
-        self.student_answers: Dict[UUID, StudentAnswer] = {}
+        self.student_answer_sheets: Dict[UUID, StudentAnswerSheet] = {}
+        
+        # 학생 답안 상세 데이터 (student_answer_sheet_question 테이블 모방)
+        self.student_answers: Dict[UUID, StudentAnswerSheetQuestion] = {}
         
         # 문제 데이터 (question 테이블 모방)
         self.questions: Dict[UUID, QuestionData] = {}
@@ -74,6 +79,9 @@ class InMemoryStorage:
         
         # 제출 ID -> 답안 ID 목록 매핑
         self.submission_to_answers: Dict[UUID, List[UUID]] = {}
+        
+        # 시험 ID -> 시험지 ID 매핑 (exam 테이블 모방)
+        self.exam_to_exam_sheet: Dict[UUID, UUID] = {}
         
         logger.info("인메모리 저장소 초기화 완료")
     
@@ -128,22 +136,36 @@ class InMemoryExamRepository(ExamRepositoryInterface):
         
         return submission
     
-    async def get_answers_by_submission_id(self, submission_id: UUID) -> list[StudentAnswer]:
+    async def get_answers_by_submission_id(self, submission_id: UUID) -> list[StudentAnswerSheetQuestion]:
         """
         제출 ID로 해당 제출의 모든 답안 조회
+        
+        수정: student_answer_sheet 연결 후 student_answer_sheet_question 조회
         
         Args:
             submission_id: 제출 고유 ID
             
         Returns:
-            list[StudentAnswer]: 학생 답안 목록
+            list[StudentAnswerSheetQuestion]: 학생 답안 목록
         """
-        answer_ids = self.storage.submission_to_answers.get(submission_id, [])
-        answers = []
+        # 1. submission_id로 answer_sheet 찾기
+        answer_sheet = None
+        for sheet_id, sheet in self.storage.student_answer_sheets.items():
+            if sheet.submission_id == submission_id:
+                answer_sheet = sheet
+                break
         
-        for answer_id in answer_ids:
-            answer = self.storage.student_answers.get(answer_id)
-            if answer:
+        if not answer_sheet:
+            logger.warning(
+                "답안지 없음 (메모리)",
+                submission_id=str(submission_id)
+            )
+            return []
+        
+        # 2. answer_sheet_id로 실제 답안들 찾기
+        answers = []
+        for answer_id, answer in self.storage.student_answers.items():
+            if answer.student_answer_sheet_id == answer_sheet.id:
                 answers.append(answer)
         
         logger.info(
@@ -203,22 +225,189 @@ class InMemoryExamRepository(ExamRepositoryInterface):
     
     def add_student_answer(
         self,
-        answer: StudentAnswer,
-        submission_id: UUID
+        answer: StudentAnswerSheetQuestion,
+        submission_id: UUID,
+        answer_sheet_id: UUID | None = None
     ):
-        """테스트용 학생 답안 추가"""
-        self.storage.student_answers[answer.answer_id] = answer
+        """테스트용 학생 답안 추가
         
-        if submission_id not in self.storage.submission_to_answers:
-            self.storage.submission_to_answers[submission_id] = []
+        수정: StudentAnswerSheetQuestion 사용 및 answer_sheet 관계 처리
+        """
+        # answer_sheet가 없으면 생성
+        if answer_sheet_id is None:
+            answer_sheet_id = answer.student_answer_sheet_id
         
-        self.storage.submission_to_answers[submission_id].append(answer.answer_id)
+        # answer_sheet가 없으면 생성
+        if answer_sheet_id not in self.storage.student_answer_sheets:
+            sheet = StudentAnswerSheet(
+                id=answer_sheet_id,
+                submission_id=submission_id,
+                student_name="Test Student"
+            )
+            self.storage.student_answer_sheets[answer_sheet_id] = sheet
+        
+        # 실제 답안 저장
+        self.storage.student_answers[answer.id] = answer
         
         logger.info(
             "테스트용 학생 답안 추가",
-            answer_id=str(answer.answer_id),
+            answer_id=str(answer.id),
+            submission_id=str(submission_id),
+            answer_sheet_id=str(answer_sheet_id)
+        )
+
+    
+    async def create_submission(
+        self, 
+        exam_id: UUID, 
+        student_id: int,
+        student_name: str
+    ) -> UUID:
+        """
+        새로운 제출 생성
+        
+        Args:
+            exam_id: 시험 ID
+            student_id: 학생 ID  
+            submission_id: 제출 ID (없으면 자동 생성)
+            
+        Returns:
+            UUID: 생성된 제출 ID
+        """
+        from app.utils.uuid_utils import generate_uuidv7
+        
+        submission_id = generate_uuidv7()
+        
+        submission_data = {
+            "id": str(submission_id),
+            "exam_id": str(exam_id),
+            "student_id": student_id,
+            "submitted_at": datetime.now()
+        }
+        
+        self.storage.submissions[submission_id] = submission_data
+        
+        logger.info(
+            "제출 생성 완료 (메모리)",
+            submission_id=str(submission_id),
+            exam_id=str(exam_id)
+        )
+        
+        return submission_id
+    
+    async def create_answer_sheet(
+        self,
+        submission_id: UUID,
+        student_id: int,
+        student_name: str
+    ) -> UUID:
+        """
+        학생 답안지 생성
+        
+        Args:
+            submission_id: 제출 ID
+            student_name: 학생 이름
+            answer_sheet_id: 답안지 ID (없으면 자동 생성)
+            
+        Returns:
+            UUID: 생성된 답안지 ID
+        """
+        from app.utils.uuid_utils import generate_uuidv7
+        
+        answer_sheet_id = generate_uuidv7()
+        
+        sheet = StudentAnswerSheet(
+            id=answer_sheet_id,
+            submission_id=submission_id,
+            student_id=student_id,
+            student_name=student_name
+        )
+        
+        self.storage.student_answer_sheets[answer_sheet_id] = sheet
+        
+        logger.info(
+            "답안지 생성 완료 (메모리)",
+            answer_sheet_id=str(answer_sheet_id),
             submission_id=str(submission_id)
         )
+        
+        return answer_sheet_id
+    
+    async def create_answer_sheet_questions(
+        self,
+        answer_sheet_id: UUID,
+        answers: list[dict]
+    ) -> list[UUID]:
+        """
+        답안지 문제별 답안 생성
+        
+        Args:
+            answer_sheet_id: 답안지 ID
+            answers: 답안 리스트 (question_id, answer_text, selected_choice 포함)
+            
+        Returns:
+            list[UUID]: 생성된 답안 ID 리스트
+        """
+        from app.utils.uuid_utils import generate_uuidv7
+        
+        answer_ids = []
+        
+        for answer_dict in answers:
+            # UUID 처리 (dict에서 UUID로 변환)
+            answer_id = answer_dict.get("id")
+            if answer_id is None:
+                answer_id = generate_uuidv7()
+            elif isinstance(answer_id, str):
+                answer_id = UUID(answer_id)
+            
+            # StudentAnswerSheetQuestion 객체 생성
+            answer_obj = StudentAnswerSheetQuestion(
+                id=answer_id,
+                question_id=answer_dict["question_id"],
+                student_answer_sheet_id=answer_sheet_id,
+                answer_text=answer_dict.get("answer_text"),
+                selected_choice=answer_dict.get("selected_choice"),
+                answer_image_url=answer_dict.get("answer_image_url")
+            )
+            
+            self.storage.student_answers[answer_id] = answer_obj
+            answer_ids.append(answer_id)
+        
+        logger.info(
+            "답안 생성 완료 (메모리)",
+            answer_sheet_id=str(answer_sheet_id),
+            answer_count=len(answer_ids)
+        )
+        
+        return answer_ids
+    
+    async def get_exam_sheet_id_by_exam_id(self, exam_id: UUID) -> UUID | None:
+        """
+        시험 ID로 시험지 ID 조회
+        
+        Args:
+            exam_id: 시험 ID
+            
+        Returns:
+            UUID | None: 시험지 ID 또는 None
+        """
+        # 메모리 구현에서는 간단히 매핑 테이블 사용
+        # 실제 DB에서는 exam 테이블 조회
+        exam_sheet_id = self.storage.exam_to_exam_sheet.get(exam_id)
+        
+        if exam_sheet_id:
+            logger.info(
+                "시험지 ID 조회 성공 (메모리)",
+                exam_id=str(exam_id),
+                exam_sheet_id=str(exam_sheet_id)
+            )
+        else:
+            logger.warning(
+                "시험지 ID 조회 실패 (메모리)",
+                exam_id=str(exam_id)
+            )
+        
+        return exam_sheet_id
 
 
 class InMemoryQuestionRepository(QuestionRepositoryInterface):
@@ -303,6 +492,52 @@ class InMemoryGradingRepository(GradingRepositoryInterface):
     def __init__(self):
         """인메모리 채점 Repository 초기화"""
         self.storage = storage
+    
+    async def create_exam_result(
+        self,
+        submission_id: UUID,
+        exam_sheet_id: UUID,
+        status: str = "PENDING"
+    ) -> UUID:
+        """
+        시험 결과 레코드 생성 (채점 전 상태)
+        
+        Args:
+            submission_id: 제출 ID
+            exam_sheet_id: 시험지 ID
+            status: 초기 상태 (기본값: PENDING)
+            
+        Returns:
+            UUID: 생성된 exam_result ID
+        """
+        from app.utils.uuid_utils import generate_uuidv7
+        from datetime import datetime
+        
+        result_id = generate_uuidv7()
+        
+        # 기본 채점 결과 객체 생성
+        grading_result = ExamGradingResult(
+            id=result_id,
+            submission_id=submission_id,
+            exam_sheet_id=exam_sheet_id,
+            graded_at=datetime.now(),
+            total_score=0,
+            status=GradingStatus(status),
+            question_results=[],
+            version=1
+        )
+        
+        # 저장소에 저장
+        self.storage.grading_results[submission_id] = grading_result
+        
+        logger.info(
+            "시험 결과 레코드 생성 완료",
+            result_id=str(result_id),
+            submission_id=str(submission_id),
+            status=status
+        )
+        
+        return result_id
     
     async def save_grading_result(self, grading_result: ExamGradingResult) -> bool:
         """

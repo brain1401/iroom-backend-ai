@@ -79,18 +79,18 @@ class MultipleChoiceGrader:
             logger.warning(
                 "학생이 답안을 선택하지 않음",
                 question_id=str(question.question_id),
-                answer_id=str(answer.answer_id),
+                answer_id=str(answer.id),
             )
             # 답안 미선택시 0점 처리
             return QuestionGradingResult(
                 question_id=question.question_id,
-                answer_id=answer.answer_id,
+                answer_id=answer.student_answer_sheet_id,
                 is_correct=False,
                 score=0,
                 max_score=question.points,
                 grading_method=self.grading_method,
                 confidence_score=Decimal("1.00"),  # 자동 채점은 100% 확신
-                grading_comment="답안을 선택하지 않아 0점 처리",
+                scoring_comment="답안을 선택하지 않아 0점 처리",
             )
 
         # 정답 여부 판정
@@ -112,19 +112,19 @@ class MultipleChoiceGrader:
 
         result = QuestionGradingResult(
             question_id=question.question_id,
-            answer_id=answer.answer_id,
+            answer_id=answer.student_answer_sheet_id,
             is_correct=is_correct,
             score=score,
             max_score=question.points,
             grading_method=self.grading_method,
             confidence_score=Decimal("1.00"),  # 자동 채점은 100% 확신
-            grading_comment=comment,
+            scoring_comment=comment,
         )
 
         logger.info(
             "객관식 문제 채점 완료",
             question_id=str(question.question_id),
-            answer_id=str(answer.answer_id),
+            answer_id=str(answer.id),
             is_correct=is_correct,
             score=score,
             max_score=question.points,
@@ -182,7 +182,7 @@ class MultipleChoiceGrader:
                 logger.error(
                     "객관식 문제 채점 실패",
                     question_id=str(question.question_id),
-                    answer_id=str(answer.answer_id),
+                    answer_id=str(answer.id),
                     error=str(e),
                 )
                 # 채점 실패한 문제는 결과에서 제외
@@ -275,22 +275,22 @@ class SubjectiveGrader:
             )
 
         # 학생 답안 검증
-        if not answer.answer_text and not answer.ai_solution_process:
+        if not answer.answer_text:
             logger.warning(
                 "학생 답안이 없음",
                 question_id=str(question.question_id),
-                answer_id=str(answer.answer_id),
+                answer_id=str(answer.id),
             )
             # 답안 없음 시 0점 처리
             return QuestionGradingResult(
                 question_id=question.question_id,
-                answer_id=answer.answer_id,
+                answer_id=answer.student_answer_sheet_id,
                 is_correct=False,
                 score=0,
                 max_score=question.points,
                 grading_method=self.grading_method,
                 confidence_score=Decimal("1.00"),
-                grading_comment="답안을 작성하지 않아 0점 처리",
+                scoring_comment="답안을 작성하지 않아 0점 처리",
             )
 
         async with self.semaphore:  # 동시성 제어
@@ -301,7 +301,7 @@ class SubjectiveGrader:
                 logger.info(
                     "주관식 문제 AI 채점 완료",
                     question_id=str(question.question_id),
-                    answer_id=str(answer.answer_id),
+                    answer_id=str(answer.id),
                     score=grading_result.score,
                     confidence=float(grading_result.confidence_score or 0),
                 )
@@ -312,19 +312,19 @@ class SubjectiveGrader:
                 logger.error(
                     "주관식 문제 AI 채점 실패",
                     question_id=str(question.question_id),
-                    answer_id=str(answer.answer_id),
+                    answer_id=str(answer.id),
                     error=str(e),
                 )
                 # AI 채점 실패 시 수동 채점 필요로 표시
                 return QuestionGradingResult(
                     question_id=question.question_id,
-                    answer_id=answer.answer_id,
+                    answer_id=answer.student_answer_sheet_id,
                     is_correct=None,  # 미정
                     score=None,  # 미정
                     max_score=question.points,
                     grading_method=GradingMethod.MANUAL,  # 수동 채점 필요
                     confidence_score=None,
-                    grading_comment=f"AI 채점 실패 - 수동 채점 필요: {str(e)}",
+                    scoring_comment=f"AI 채점 실패 - 수동 채점 필요: {str(e)}",
                 )
 
     async def _call_gemini_grading(
@@ -344,7 +344,7 @@ class SubjectiveGrader:
         from langchain_core.messages import HumanMessage
 
         # 학생 답안 텍스트 추출 (OCR 결과 우선 사용)
-        student_answer_text = answer.ai_solution_process or answer.answer_text or ""
+        student_answer_text = answer.answer_text or ""
 
         # AI 채점 프롬프트 구성
         prompt = f"""
@@ -411,13 +411,13 @@ class SubjectiveGrader:
 
             return QuestionGradingResult(
                 question_id=question.question_id,
-                answer_id=answer.answer_id,
+                answer_id=answer.student_answer_sheet_id,
                 is_correct=is_correct,
                 score=score,
                 max_score=question.points,
                 grading_method=self.grading_method,
                 confidence_score=Decimal(str(confidence)),
-                grading_comment=comment,
+                scoring_comment=comment,
             )
 
         except (json.JSONDecodeError, KeyError, ValueError) as e:

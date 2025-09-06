@@ -22,7 +22,9 @@ import structlog
 
 from app.models.grading import (
     QuestionData,
-    StudentAnswer, 
+    StudentAnswer,
+    StudentAnswerSheet,
+    StudentAnswerSheetQuestion, 
     ExamGradingResult,
     QuestionGradingResult,
     QuestionType,
@@ -149,10 +151,9 @@ class MySQLExamRepository(ExamRepositoryInterface):
                 query = """
                 SELECT 
                     BIN_TO_UUID(id) as id,
-                    BIN_TO_UUID(user_id) as user_id, 
+                    student_id,  
                     BIN_TO_UUID(exam_id) as exam_id,
-                    submitted_at,
-                    total_score
+                    submitted_at
                 FROM exam_submission 
                 WHERE id = UUID_TO_BIN(%s)
                 """
@@ -173,15 +174,17 @@ class MySQLExamRepository(ExamRepositoryInterface):
                 
                 return result
     
-    async def get_answers_by_submission_id(self, submission_id: UUID) -> list[StudentAnswer]:
+    async def get_answers_by_submission_id(self, submission_id: UUID) -> list[StudentAnswerSheetQuestion]:
         """
         제출 ID로 해당 제출의 모든 답안 조회
+        
+        수정: student_answer_sheet → student_answer_sheet_question 조인
         
         Args:
             submission_id: 제출 고유 ID
             
         Returns:
-            list[StudentAnswer]: 학생 답안 목록
+            list[StudentAnswerSheetQuestion]: 학생 답안 목록
         """
         pool = await self.connection.get_pool()
         
@@ -189,28 +192,30 @@ class MySQLExamRepository(ExamRepositoryInterface):
             async with conn.cursor(aiomysql.DictCursor) as cursor:
                 query = """
                 SELECT
-                    BIN_TO_UUID(id) as id,
-                    BIN_TO_UUID(question_id) as question_id,
-                    answer_text,
-                    answer_image_url,
-                    selected_choice,
-                    ai_solution_process
-                FROM student_answer_sheet
-                WHERE submission_id = UUID_TO_BIN(%s)
-                ORDER BY question_id
+                    BIN_TO_UUID(sasq.id) as id,
+                    BIN_TO_UUID(sasq.question_id) as question_id,
+                    BIN_TO_UUID(sasq.student_answer_sheet_id) as student_answer_sheet_id,
+                    sasq.answer_text,
+                    sasq.answer_image_url,
+                    sasq.selected_choice
+                FROM student_answer_sheet sas
+                INNER JOIN student_answer_sheet_question sasq 
+                    ON sas.id = sasq.student_answer_sheet_id
+                WHERE sas.submission_id = UUID_TO_BIN(%s)
+                ORDER BY sasq.question_id
                 """
                 await cursor.execute(query, (str(submission_id),))
                 rows = await cursor.fetchall()
                 
                 answers = []
                 for row in rows:
-                    answer = StudentAnswer(
-                        answer_id=UUID(row['id']),
+                    answer = StudentAnswerSheetQuestion(
+                        id=UUID(row['id']),
                         question_id=UUID(row['question_id']),
+                        student_answer_sheet_id=UUID(row['student_answer_sheet_id']),
                         answer_text=row['answer_text'],
                         answer_image_url=row['answer_image_url'],
-                        selected_choice=row['selected_choice'],
-                        ai_solution_process=row['ai_solution_process']
+                        selected_choice=row['selected_choice']
                     )
                     answers.append(answer)
                 
@@ -257,6 +262,168 @@ class MySQLExamRepository(ExamRepositoryInterface):
                 logger.warning(
                     "시험지 ID 조회 실패",
                     submission_id=str(submission_id)
+                )
+                return None
+    
+    async def create_submission(self, exam_id: UUID, student_id: int, student_name: str) -> UUID:
+        """
+        새로운 시험 제출 생성
+        
+        Args:
+            exam_id: 시험 ID
+            student_id: 학생 ID
+            student_name: 학생 이름
+            
+        Returns:
+            UUID: 생성된 제출 ID
+        """
+        from app.utils.uuid_utils import generate_uuidv7
+        
+        submission_id = generate_uuidv7()
+        pool = await self.connection.get_pool()
+        
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                query = """
+                INSERT INTO exam_submission (id, exam_id, student_id, submitted_at)
+                VALUES (UUID_TO_BIN(%s), UUID_TO_BIN(%s), %s, NOW())
+                """
+                await cursor.execute(query, (str(submission_id), str(exam_id), student_id))
+                await conn.commit()
+                
+                logger.info(
+                    "시험 제출 생성 완료",
+                    submission_id=str(submission_id),
+                    exam_id=str(exam_id),
+                    student_id=student_id
+                )
+                
+                return submission_id
+    
+    async def create_answer_sheet(self, submission_id: UUID, student_id: int, student_name: str) -> UUID:
+        """
+        학생 답안지 생성
+        
+        Args:
+            submission_id: 제출 ID
+            student_id: 학생 ID (호환성을 위해 유지하지만 사용하지 않음)
+            student_name: 학생 이름
+            
+        Returns:
+            UUID: 생성된 답안지 ID
+        """
+        from app.utils.uuid_utils import generate_uuidv7
+        
+        answer_sheet_id = generate_uuidv7()
+        pool = await self.connection.get_pool()
+        
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                # student_answer_sheet 테이블에는 student_id 컬럼이 없음
+                query = """
+                INSERT INTO student_answer_sheet (id, submission_id, student_name)
+                VALUES (UUID_TO_BIN(%s), UUID_TO_BIN(%s), %s)
+                """
+                await cursor.execute(query, (
+                    str(answer_sheet_id),
+                    str(submission_id),
+                    student_name
+                ))
+                await conn.commit()
+                
+                logger.info(
+                    "학생 답안지 생성 완료",
+                    answer_sheet_id=str(answer_sheet_id),
+                    submission_id=str(submission_id)
+                )
+                
+                return answer_sheet_id
+    
+    async def create_answer_sheet_questions(
+        self,
+        answer_sheet_id: UUID,
+        answers: list[dict]
+    ) -> list[UUID]:
+        """
+        학생 답안지 문제별 답안 생성
+        
+        Args:
+            answer_sheet_id: 답안지 ID
+            answers: 답안 목록
+            
+        Returns:
+            list[UUID]: 생성된 답안 ID 목록
+        """
+        from app.utils.uuid_utils import generate_uuidv7
+        
+        pool = await self.connection.get_pool()
+        answer_ids = []
+        
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                for answer in answers:
+                    answer_id = generate_uuidv7()
+                    answer_ids.append(answer_id)
+                    
+                    query = """
+                    INSERT INTO student_answer_sheet_question 
+                    (id, student_answer_sheet_id, question_id, answer_text, answer_image_url, selected_choice)
+                    VALUES (UUID_TO_BIN(%s), UUID_TO_BIN(%s), UUID_TO_BIN(%s), %s, %s, %s)
+                    """
+                    
+                    await cursor.execute(query, (
+                        str(answer_id),
+                        str(answer_sheet_id),
+                        str(answer['question_id']),
+                        answer.get('answer_text'),
+                        answer.get('answer_image_url'),
+                        answer.get('selected_choice')
+                    ))
+                
+                await conn.commit()
+                
+                logger.info(
+                    "학생 답안 생성 완료",
+                    answer_sheet_id=str(answer_sheet_id),
+                    answer_count=len(answer_ids)
+                )
+                
+                return answer_ids
+    
+    async def get_exam_sheet_id_by_exam_id(self, exam_id: UUID) -> UUID | None:
+        """
+        시험 ID로 시험지 ID 조회
+        
+        Args:
+            exam_id: 시험 ID
+            
+        Returns:
+            UUID | None: 시험지 ID 또는 None
+        """
+        pool = await self.connection.get_pool()
+        
+        async with pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cursor:
+                query = """
+                SELECT BIN_TO_UUID(exam_sheet_id) as exam_sheet_id
+                FROM exam
+                WHERE id = UUID_TO_BIN(%s)
+                """
+                await cursor.execute(query, (str(exam_id),))
+                result = await cursor.fetchone()
+                
+                if result:
+                    exam_sheet_id = UUID(result['exam_sheet_id'])
+                    logger.info(
+                        "시험지 ID 조회 성공",
+                        exam_id=str(exam_id),
+                        exam_sheet_id=str(exam_sheet_id)
+                    )
+                    return exam_sheet_id
+                
+                logger.warning(
+                    "시험지 ID 조회 실패",
+                    exam_id=str(exam_id)
                 )
                 return None
 
@@ -307,7 +474,7 @@ class MySQLQuestionRepository(QuestionRepositoryInterface):
                 FROM question q
                 JOIN exam_sheet_question esq ON q.id = esq.question_id
                 WHERE esq.exam_sheet_id = UUID_TO_BIN(%s)
-                ORDER BY esq.question_order
+                ORDER BY esq.seq_no
                 """
                 await cursor.execute(query, (str(exam_sheet_id),))
                 rows = await cursor.fetchall()
@@ -445,7 +612,7 @@ class MySQLGradingRepository(GradingRepositoryInterface):
                         INSERT INTO exam_result (
                             id, submission_id, exam_sheet_id,
                             graded_at, total_score, status,
-                            grading_comment, version
+                            scoring_comment, version
                         ) VALUES (
                             UUID_TO_BIN(%s), UUID_TO_BIN(%s), UUID_TO_BIN(%s),
                             %s, %s, %s, %s, %s
@@ -470,7 +637,7 @@ class MySQLGradingRepository(GradingRepositoryInterface):
                             INSERT INTO exam_result_question (
                                 id, exam_result_id, question_id, answer_id,
                                 is_correct, score, max_score,
-                                grading_method, grading_comment, confidence_score,
+                                grading_method, scoring_comment, confidence_score,
                                 created_at, updated_at
                             ) VALUES (
                                 UUID_TO_BIN(UUID()), UUID_TO_BIN(%s), UUID_TO_BIN(%s), UUID_TO_BIN(%s),
@@ -767,3 +934,50 @@ class MySQLGradingRepository(GradingRepositoryInterface):
                     )
                     await conn.rollback()
                     return False
+    
+    async def create_exam_result(
+        self,
+        submission_id: UUID,
+        exam_sheet_id: UUID,
+        status: str = "PENDING"
+    ) -> UUID:
+        """
+        시험 결과 레코드 생성 (채점 전 상태)
+        
+        Args:
+            submission_id: 제출 ID
+            exam_sheet_id: 시험지 ID
+            status: 초기 상태 (기본값: PENDING)
+            
+        Returns:
+            UUID: 생성된 exam_result ID
+        """
+        from app.utils.uuid_utils import generate_uuidv7
+        
+        result_id = generate_uuidv7()
+        pool = await self.connection.get_pool()
+        
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                query = """
+                INSERT INTO exam_result 
+                (id, submission_id, exam_sheet_id, graded_at, total_score, status, version)
+                VALUES (UUID_TO_BIN(%s), UUID_TO_BIN(%s), UUID_TO_BIN(%s), NOW(), 0, %s, 1)
+                """
+                
+                await cursor.execute(query, (
+                    str(result_id),
+                    str(submission_id),
+                    str(exam_sheet_id),
+                    status
+                ))
+                await conn.commit()
+                
+                logger.info(
+                    "시험 결과 레코드 생성 완료",
+                    result_id=str(result_id),
+                    submission_id=str(submission_id),
+                    status=status
+                )
+                
+                return result_id

@@ -25,6 +25,8 @@ dependencies = [
   "rich>=14.1.0",
   "aiomysql>=0.1.1",
   "langchain-google-vertexai>=2.0.28",
+  "cryptography>=45.0.7",
+  "uuid7>=0.1.0",
 ]
 
 [project.optional-dependencies]

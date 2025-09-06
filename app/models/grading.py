@@ -90,27 +90,33 @@ class QuestionData(BaseModel):
     scoring_rubric: str | None = Field(default=None, description="채점 기준 텍스트")
 
 
-class StudentAnswer(BaseModel):
+class StudentAnswerSheet(BaseModel):
     """
-    학생 답안 모델 (DB student_answer_sheet 테이블 기반)
-
-    필드:
-    - answer_id: 답안 ID
-    - question_id: 문제 ID
-    - answer_text: 답안 텍스트
-    - answer_image_url: 답안 이미지 URL
-    - selected_choice: 객관식 선택 답안
-    - ai_solution_process: AI가 추출한 풀이 과정
+    학생 답안지 (중간 테이블)
+    DB: student_answer_sheet 테이블 기반
     """
+    id: UUID = Field(..., description="답안지 고유 ID")
+    submission_id: UUID = Field(..., description="제출 ID")
+    student_name: str = Field(..., max_length=100, description="학생 이름")
 
-    answer_id: UUID = Field(..., description="답안 고유 ID")
+
+class StudentAnswerSheetQuestion(BaseModel):
+    """
+    학생 답안 상세 (실제 답안 데이터)
+    DB: student_answer_sheet_question 테이블 기반
+    
+    기존 StudentAnswer를 대체
+    """
+    id: UUID = Field(..., description="답안 고유 ID")
     question_id: UUID = Field(..., description="문제 ID")
-    answer_text: str | None = Field(default=None, description="답안 텍스트")
-    answer_image_url: str | None = Field(default=None, description="답안 이미지 URL")
+    student_answer_sheet_id: UUID = Field(..., description="답안지 ID")
+    answer_text: str | None = Field(default=None, max_length=1000, description="답안 텍스트")
+    answer_image_url: str | None = Field(default=None, max_length=500, description="답안 이미지 URL")
     selected_choice: int | None = Field(default=None, description="객관식 선택 답안")
-    ai_solution_process: str | None = Field(
-        default=None, description="AI 추출 풀이 과정"
-    )
+
+
+# 하위 호환성을 위한 별칭 (점진적 마이그레이션용)
+StudentAnswer = StudentAnswerSheetQuestion
 
 
 class QuestionGradingResult(BaseModel):
@@ -141,7 +147,7 @@ class QuestionGradingResult(BaseModel):
         decimal_places=2,
         description="AI 채점 신뢰도 (0.00-1.00)",
     )
-    grading_comment: str | None = Field(default=None, description="채점 코멘트/피드백")
+    scoring_comment: str | None = Field(default=None, description="채점 코멘트/피드백")
     created_at: datetime = Field(default_factory=datetime.now, description="채점 시각")
 
 
@@ -379,4 +385,115 @@ class BatchGradingResult(BaseModel):
     average_processing_time_ms: float = Field(..., ge=0, description="평균 처리 시간")
     completed_at: datetime = Field(
         default_factory=datetime.now, description="완료 시각"
+    )
+
+
+class AnswerSubmission(BaseModel):
+    """
+    개별 문제 답안 제출 모델
+    
+    필드:
+    - question_id: 문제 ID  
+    - answer_text: 주관식 답안 텍스트
+    - selected_choice: 객관식 선택 번호
+    - answer_image_url: 답안 이미지 URL (선택)
+    """
+    question_id: UUID = Field(..., description="문제 고유 ID")
+    answer_text: str | None = Field(default=None, max_length=1000, description="주관식 답안 텍스트")
+    selected_choice: int | None = Field(default=None, ge=1, le=5, description="객관식 선택 번호 (1-5)")
+    answer_image_url: str | None = Field(default=None, max_length=500, description="답안 이미지 URL")
+    
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "question_id": "018e3d5a-7b4c-7000-8000-000000000001",
+                    "selected_choice": 3
+                },
+                {
+                    "question_id": "018e3d5a-7b4c-7000-8000-000000000002", 
+                    "answer_text": "x = 10, y = 20"
+                }
+            ]
+        }
+    }
+
+
+class SubmissionAndGradingRequest(BaseModel):
+    """
+    제출 및 채점 통합 요청 모델
+    
+    시험 답안을 제출하고 즉시 채점을 수행하는 통합 엔드포인트용 모델
+    
+    필드:
+    - exam_id: 시험 ID
+    - student_id: 학생 ID
+    - student_name: 학생 이름
+    - answers: 답안 리스트
+    - force_grading: 즉시 채점 여부 (기본 true)
+    - grading_options: 채점 옵션
+    """
+    exam_id: UUID = Field(..., description="시험 고유 ID")
+    student_id: int = Field(..., gt=0, description="학생 ID")
+    student_name: str = Field(..., min_length=1, max_length=100, description="학생 이름")
+    answers: list[AnswerSubmission] = Field(
+        ..., 
+        min_length=1, 
+        max_length=100,
+        description="제출할 답안 리스트"
+    )
+    force_grading: bool = Field(default=True, description="제출 즉시 채점 수행 여부")
+    grading_options: dict = Field(
+        default_factory=dict, 
+        description="채점 옵션 (AI 모델 설정, 엄격도 등)"
+    )
+    
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "exam_id": "018e3d5a-7b4c-7000-8000-000000000000",
+                "student_id": 12345,
+                "student_name": "김철수",
+                "answers": [
+                    {
+                        "question_id": "018e3d5a-7b4c-7000-8000-000000000001",
+                        "selected_choice": 3
+                    },
+                    {
+                        "question_id": "018e3d5a-7b4c-7000-8000-000000000002",
+                        "answer_text": "x = 10, y = 20"
+                    }
+                ],
+                "force_grading": True,
+                "grading_options": {}
+            }
+        }
+    }
+
+
+class SubmissionAndGradingResponse(BaseModel):
+    """
+    제출 및 채점 통합 응답 모델
+    
+    필드:
+    - submission_id: 생성된 제출 ID
+    - exam_sheet_id: 시험지 ID
+    - student_answer_sheet_id: 답안지 ID
+    - grading_result: 채점 결과 (force_grading=true인 경우)
+    - status: 처리 상태
+    - message: 상태 메시지
+    - submitted_at: 제출 시각
+    """
+    submission_id: UUID = Field(..., description="생성된 제출 고유 ID")
+    exam_sheet_id: UUID = Field(..., description="시험지 ID")
+    student_answer_sheet_id: UUID = Field(..., description="생성된 답안지 ID")
+    grading_result: ExamGradingResult | None = Field(
+        default=None, 
+        description="채점 결과 (즉시 채점 시)"
+    )
+    status: str = Field(..., description="처리 상태 (SUBMITTED, GRADED, FAILED)")
+    message: str = Field(..., description="상태 메시지")
+    submitted_at: datetime = Field(
+        default_factory=datetime.now, 
+        description="제출 시각"
     )

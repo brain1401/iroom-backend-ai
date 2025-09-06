@@ -15,6 +15,7 @@ from uuid import UUID
 from app.models.grading import (
     QuestionData, 
     StudentAnswer,
+    StudentAnswerSheetQuestion,
     ExamGradingResult,
     QuestionGradingResult
 )
@@ -44,7 +45,7 @@ class ExamRepositoryInterface(ABC):
         pass
     
     @abstractmethod 
-    async def get_answers_by_submission_id(self, submission_id: UUID) -> list[StudentAnswer]:
+    async def get_answers_by_submission_id(self, submission_id: UUID) -> list[StudentAnswerSheetQuestion]:
         """
         제출 ID로 해당 제출의 모든 답안 조회
         
@@ -52,7 +53,7 @@ class ExamRepositoryInterface(ABC):
             submission_id: 제출 고유 ID
             
         Returns:
-            list[StudentAnswer]: 학생 답안 목록
+            list[StudentAnswerSheetQuestion]: 학생 답안 목록
         """
         pass
     
@@ -69,6 +70,78 @@ class ExamRepositoryInterface(ABC):
         """
         pass
 
+
+    
+    @abstractmethod
+    async def create_submission(
+        self, 
+        exam_id: UUID, 
+        student_id: int,
+        submission_id: UUID | None = None
+    ) -> UUID:
+        """
+        새로운 제출 생성
+        
+        Args:
+            exam_id: 시험 ID
+            student_id: 학생 ID  
+            submission_id: 제출 ID (없으면 자동 생성)
+            
+        Returns:
+            UUID: 생성된 제출 ID
+        """
+        pass
+    
+    @abstractmethod
+    async def create_answer_sheet(
+        self,
+        submission_id: UUID,
+        student_name: str,
+        answer_sheet_id: UUID | None = None
+    ) -> UUID:
+        """
+        학생 답안지 생성
+        
+        Args:
+            submission_id: 제출 ID
+            student_name: 학생 이름
+            answer_sheet_id: 답안지 ID (없으면 자동 생성)
+            
+        Returns:
+            UUID: 생성된 답안지 ID
+        """
+        pass
+    
+    @abstractmethod
+    async def create_answer_sheet_questions(
+        self,
+        answer_sheet_id: UUID,
+        answers: list[dict]
+    ) -> list[UUID]:
+        """
+        답안지 문제별 답안 생성
+        
+        Args:
+            answer_sheet_id: 답안지 ID
+            answers: 답안 리스트 (question_id, answer_text, selected_choice 포함)
+            
+        Returns:
+            list[UUID]: 생성된 답안 ID 리스트
+        """
+        pass
+    
+    @abstractmethod
+    async def get_exam_sheet_id_by_exam_id(self, exam_id: UUID) -> UUID | None:
+        """
+        시험 ID로 시험지 ID 조회
+        
+        Args:
+            exam_id: 시험 ID
+            
+        Returns:
+            UUID | None: 시험지 ID 또는 None
+        """
+        pass
 
 class QuestionRepositoryInterface(ABC):
     """
@@ -117,6 +190,26 @@ class GradingRepositoryInterface(ABC):
     - 채점 상태 업데이트
     - 재채점 이력 관리
     """
+    
+    @abstractmethod
+    async def create_exam_result(
+        self,
+        submission_id: UUID,
+        exam_sheet_id: UUID,
+        status: str = "PENDING"
+    ) -> UUID:
+        """
+        시험 결과 레코드 생성 (채점 전 상태)
+        
+        Args:
+            submission_id: 제출 ID
+            exam_sheet_id: 시험지 ID
+            status: 초기 상태 (기본값: PENDING)
+            
+        Returns:
+            UUID: 생성된 exam_result ID
+        """
+        pass
     
     @abstractmethod
     async def save_grading_result(self, grading_result: ExamGradingResult) -> bool:
