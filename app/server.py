@@ -78,6 +78,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # Setup error handlers (should be last)
     setup_error_handlers(app, settings)
+    
+    # Startup event handler for background tasks
+    @app.on_event("startup")
+    async def startup_event():
+        """앱 시작 시 백그라운드 작업 시작"""
+        import asyncio
+        from app.routes.text_recognition import _start_polling_background_task
+        
+        # 폴링 백그라운드 작업 시작
+        try:
+            asyncio.create_task(_start_polling_background_task())
+            import structlog
+            logger = structlog.get_logger("startup")
+            logger.info("비동기 글자인식 폴링 백그라운드 작업 시작")
+        except Exception as e:
+            import structlog
+            logger = structlog.get_logger("startup")
+            logger.error("폴링 백그라운드 작업 시작 실패", error=str(e))
 
     # Customize OpenAPI schema with security and error responses
     def custom_openapi():

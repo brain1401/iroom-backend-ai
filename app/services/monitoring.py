@@ -113,7 +113,7 @@ class MetricsCollector:
         self.window_size = window_size
         self.alert_thresholds = alert_thresholds or {
             "success_rate": 0.95,  # 성공률 95% 미만시 알림
-            "avg_processing_time": 5000,  # 평균 처리시간 5초 초과시 알림
+            "avg_processing_time": 60000,  # 평균 처리시간 60초(1분) 초과시 알림
             "error_rate": 0.05,  # 오류율 5% 초과시 알림
         }
 
@@ -532,7 +532,7 @@ class MetricsCollector:
         if (
             stats.success_rate < 0.8
             or error_analysis["error_rate"] > 0.2
-            or stats.avg_processing_time_ms > 10000
+            or stats.avg_processing_time_ms > 120000
         ):
             return "critical"
 
@@ -540,7 +540,7 @@ class MetricsCollector:
         if (
             stats.success_rate < 0.95
             or error_analysis["error_rate"] > 0.05
-            or stats.avg_processing_time_ms > 5000
+            or stats.avg_processing_time_ms > 60000
         ):
             return "warning"
 

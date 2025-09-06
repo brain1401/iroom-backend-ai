@@ -130,8 +130,10 @@ class BatchTextRecognitionService:
     def _get_gemini_model(self) -> ChatGoogleGenerativeAI:
         """Gemini 모델 인스턴스 생성/재사용"""
         if self._gemini_model is None:
+            from app.config.settings import get_settings
+            settings = get_settings()
             self._gemini_model = ChatGoogleGenerativeAI(
-                model="gemini-2.5-pro",
+                model=settings.gemini_model,
                 google_api_key=self.gemini_api_key,
                 temperature=0.1,
                 max_output_tokens=8000,
@@ -184,11 +186,20 @@ class BatchTextRecognitionService:
                         model_version="gemini-2.5-pro",
                     )
 
-                    # 응답 생성
+                    # 응답 생성 (JSON 구조 변경에 맞춰 매핑)
                     answers = []
                     for answer_data in ocr_result.get("answers", []):
                         try:
-                            answers.append(TextRecognitionAnswer(**answer_data))
+                            # JSON 구조 통일: question_number 사용
+                            # latex_formula 기본값 None 설정
+                            mapped_data = {
+                                "question_number": answer_data.get("question_number", answer_data.get("id", 1)),
+                                "question_label": answer_data.get("question_label", "1"),
+                                "extracted_text": answer_data.get("extracted_text", ""),
+                                "latex_formula": answer_data.get("latex_formula", None),
+                                "confidence": answer_data.get("confidence", 0.0)
+                            }
+                            answers.append(TextRecognitionAnswer(**mapped_data))
                         except Exception:
                             continue
 
@@ -280,24 +291,9 @@ class BatchTextRecognitionService:
         # Base64 인코딩
         image_base64 = base64.b64encode(image_data).decode("utf-8")
 
-        # 프롬프트 (기존과 동일)
-        prompt = """
-You are an expert Korean handwriting recognition specialist for exam answer sheets.
-
-Extract all handwritten Korean text from subjective question areas in this image.
-
-Return the results in this exact JSON format:
-{
-    "answers": [
-        {
-            "question_number": 1,
-            "question_label": "주1",
-            "extracted_text": "handwritten Korean text",
-            "confidence": 0.85
-        }
-    ]
-}
-"""
+        # 중앙화된 프롬프트 사용 (배치 처리 최적화)
+        from app.prompts.text_recognition_prompts import get_batch_prompt
+        prompt = get_batch_prompt()
 
         # 메시지 구성
         message = HumanMessage(

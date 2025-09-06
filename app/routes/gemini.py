@@ -10,7 +10,6 @@ import structlog
 from pydantic import BaseModel
 
 from langserve import add_routes
-from langserve.schema import CustomUserType
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableLambda, Runnable
@@ -22,16 +21,7 @@ from app.middleware.auth import require_api_key
 logger = structlog.get_logger("gemini_routes")
 
 
-class GeminiRequest(CustomUserType):
-    """요청 모델 명세"""
-
-    input: str
-
-
-class GeminiResponse(CustomUserType):
-    """응답 모델 명세"""
-
-    output: str
+# 제거됨: GeminiRequest, GeminiResponse - LangServe는 간단한 str 체인 선호
 
 
 class GeminiHealthResponse(BaseModel):
@@ -47,25 +37,23 @@ def _build_gemini_runnable(settings: Settings) -> Runnable:
     # API 키 미설정 시 요청마다 명확한 오류 발생 처리
     if not settings.gemini_api_key:
 
-        def _raise_on_call(request: GeminiRequest) -> GeminiResponse:
+        def _raise_on_call(input_text: str) -> str:
             raise RuntimeError("Gemini API key not configured")
 
         return RunnableLambda(_raise_on_call)
 
-    def _process_request(request: GeminiRequest) -> GeminiResponse:
-        """Gemini 요청 처리 함수"""
-        model = ChatGoogleGenerativeAI(
-            model=settings.gemini_model,
-            google_api_key=settings.gemini_api_key,
-            temperature=settings.gemini_temperature,
-            max_output_tokens=settings.gemini_max_tokens,
-        )
-        # 모델 호출 및 응답 처리
-        response = model.invoke(request.input)
-        output = StrOutputParser().invoke(response)
-        return GeminiResponse(output=output)
-
-    return RunnableLambda(_process_request)
+    # LangServe는 더 간단한 str -> str 체인 선호
+    model = ChatGoogleGenerativeAI(
+        model=settings.gemini_model,
+        google_api_key=settings.gemini_api_key,
+        temperature=settings.gemini_temperature,
+        max_output_tokens=settings.gemini_max_tokens,
+    )
+    
+    # 간단한 체인 구성: str 입력 -> 모델 호출 -> str 출력
+    chain = model | StrOutputParser()
+    
+    return chain
 
 
 def setup_gemini_routes(app: FastAPI, settings: Settings | None = None) -> None:
@@ -89,7 +77,7 @@ def setup_gemini_routes(app: FastAPI, settings: Settings | None = None) -> None:
     if settings.require_api_key:
         dependencies.append(Depends(require_api_key))
 
-    # LangServe 라우터 추가 - batch 엔드포인트 제외로 TypeAdapter 오류 회피
+    # LangServe 라우터 추가 - 모든 엔드포인트 활성화
     add_routes(
         app,
         runnable,
@@ -97,6 +85,7 @@ def setup_gemini_routes(app: FastAPI, settings: Settings | None = None) -> None:
         dependencies=dependencies,
         enabled_endpoints=[
             "invoke",
+            "batch",  # batch 엔드포인트 재활성화
             "stream",
             "stream_log",
             "input_schema",

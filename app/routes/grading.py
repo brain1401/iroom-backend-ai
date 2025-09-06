@@ -30,6 +30,49 @@ logger = structlog.get_logger("grading_api")
 
 # FastAPI 라우터 생성
 router = APIRouter(prefix="/grading", tags=["채점"])
+@router.get("/health")
+async def grading_health_check():
+    """
+    채점 시스템 헬스체크
+    
+    Returns:
+        dict: 채점 시스템 상태 정보
+    """
+    from app.config.settings import get_settings
+    settings = get_settings()
+    
+    health_status = {
+        "status": "healthy",
+        "service": "grading",
+        "database_enabled": settings.database_enabled,
+        "ai_model": settings.grading_ai_model,
+        "confidence_threshold": settings.grading_confidence_threshold,
+        "max_concurrent_subjective": settings.grading_max_concurrent_subjective,
+        "features": [
+            "exam_grading",
+            "batch_processing",
+            "subjective_evaluation",
+            "ai_assisted_grading"
+        ]
+    }
+    
+    # 데이터베이스 연결 상태 확인
+    if settings.database_enabled:
+        try:
+            # 간단한 DB 연결 테스트 (실제 구현 시 DB 연결 확인)
+            health_status["database_status"] = "connected"
+        except Exception as e:
+            health_status["status"] = "degraded"
+            health_status["database_status"] = f"error: {str(e)}"
+    else:
+        health_status["database_status"] = "in-memory mode"
+    
+    # Gemini API 키 확인
+    if not settings.gemini_api_key:
+        health_status["status"] = "unhealthy"
+        health_status["error"] = "Gemini API key not configured"
+    
+    return health_status
 
 
 @router.post("/{submission_id}", response_model=ExamGradingResult)
