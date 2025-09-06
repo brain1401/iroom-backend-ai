@@ -8,10 +8,10 @@ from fastapi import FastAPI, Depends
 from fastapi.responses import RedirectResponse
 import structlog
 from pydantic import BaseModel, Field
-from typing import Any
 
-from langserve import add_routes
-from langchain_google_genai import ChatGoogleGenerativeAI
+
+from langserve import add_routes, CustomUserType
+from langchain_google_vertexai import ChatVertexAI
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableLambda, Runnable
 
@@ -23,12 +23,12 @@ logger = structlog.get_logger("gemini_routes")
 
 
 # LangServe OpenAPI 스키마 생성을 위한 명시적 타입 정의
-class GeminiInput(BaseModel):
+class GeminiInput(CustomUserType):
     """Gemini API 입력 모델"""
     input: str = Field(..., description="처리할 텍스트 입력")
 
 
-class GeminiOutput(BaseModel):
+class GeminiOutput(CustomUserType):
     """Gemini API 출력 모델"""
     output: str = Field(..., description="처리된 텍스트 출력")
 
@@ -43,18 +43,19 @@ class GeminiHealthResponse(BaseModel):
 
 def _build_gemini_runnable(settings: Settings) -> Runnable:
     """Gemini Runnable 생성 함수"""
-    # API 키 미설정 시 요청마다 명확한 오류 발생 처리
-    if not settings.gemini_api_key:
+    # GCP 프로젝트 미설정 시 요청마다 명확한 오류 발생 처리
+    if not settings.gcp_project_id:
 
         def _raise_on_call(input_dict: dict) -> dict:
-            raise RuntimeError("Gemini API key not configured")
+            raise RuntimeError("GCP project not configured")
 
         return RunnableLambda(_raise_on_call)
 
     # LangServe OpenAPI 스키마 생성을 위한 체인 구성
-    model = ChatGoogleGenerativeAI(
+    model = ChatVertexAI(
         model=settings.gemini_model,
-        google_api_key=settings.gemini_api_key,
+        project=settings.gcp_project_id,
+        location=settings.gcp_location,
         temperature=settings.gemini_temperature,
         max_output_tokens=settings.gemini_max_tokens,
     )
@@ -72,15 +73,13 @@ def _build_gemini_runnable(settings: Settings) -> Runnable:
         return {"output": output}
     
     # 체인 구성: dict 입력 -> str 추출 -> 모델 호출 -> str 파싱 -> dict 출력
+    # CustomUserType 사용 시 타입이 자동으로 추론되므로 with_types 불필요
     chain = (
         RunnableLambda(extract_input) 
         | model 
         | StrOutputParser() 
         | RunnableLambda(format_output)
-    ).with_types(
-        input_type=GeminiInput,
-        output_type=GeminiOutput
-    )
+    )  # type: ignore[var-annotated]
     
     return chain
 
@@ -126,16 +125,17 @@ def setup_gemini_routes(app: FastAPI, settings: Settings | None = None) -> None:
     # 별도 헬스체크 엔드포인트 유지
     @app.get("/gemini/health", response_model=GeminiHealthResponse, summary="Gemini API 상태 확인")
     async def gemini_health():
-        # API 키 미설정 시 바로 비정상 상태 반환
-        if not settings.gemini_api_key:
+        # GCP 프로젝트 미설정 시 바로 비정상 상태 반환
+        if not settings.gcp_project_id:
             return GeminiHealthResponse(
-                status="unhealthy", service="gemini", error="missing_api_key"
+                status="unhealthy", service="gemini", error="missing_gcp_project"
             )
         try:
             # 가벼운 모델 호출로 확인
-            await ChatGoogleGenerativeAI(
+            await ChatVertexAI(
                 model=settings.gemini_model,
-                google_api_key=settings.gemini_api_key,
+                project=settings.gcp_project_id,
+                location=settings.gcp_location,
                 temperature=0.0,
                 max_output_tokens=8,
             ).ainvoke("ping")

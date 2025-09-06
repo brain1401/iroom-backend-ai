@@ -16,7 +16,7 @@ import json
 from fastapi import HTTPException
 import structlog
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_vertexai import ChatVertexAI
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, ValidationError
 
@@ -54,7 +54,7 @@ def create_text_recognition_prompt() -> str:
     return get_detailed_prompt()
 
 
-def create_gemini_vision_model(api_key: str) -> ChatGoogleGenerativeAI:
+def create_gemini_vision_model(api_key: str | None = None) -> ChatVertexAI:
     """
     Gemini Vision 모델 생성
 
@@ -62,7 +62,7 @@ def create_gemini_vision_model(api_key: str) -> ChatGoogleGenerativeAI:
         api_key: Gemini API 키
 
     Returns:
-        ChatGoogleGenerativeAI: 구성된 Gemini Vision 모델
+        ChatVertexAI: 구성된 Vertex AI Gemini Vision 모델
 
     Raises:
         HTTPException: API 키가 설정되지 않은 경우
@@ -72,16 +72,17 @@ def create_gemini_vision_model(api_key: str) -> ChatGoogleGenerativeAI:
 
     from app.config.settings import get_settings
     settings = get_settings()
-    return ChatGoogleGenerativeAI(
+    return ChatVertexAI(
         model=settings.gemini_model,  # Vision 지원 모델
-        google_api_key=api_key,
+        project=settings.gcp_project_id,
+        location=settings.gcp_location,
         temperature=0.0,  # 최대 정확성 (수학 기호 인식)
         max_output_tokens=8000,
     )
 
 
 async def process_text_recognition_with_gemini(
-    image_data: bytes, model: ChatGoogleGenerativeAI
+    image_data: bytes, model: ChatVertexAI
 ) -> TextRecognitionParsingResponse:
     """
     Gemini Vision API를 통한 글자인식 처리

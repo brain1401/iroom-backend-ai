@@ -16,7 +16,7 @@ import time
 from decimal import Decimal
 from uuid import UUID, uuid4
 import structlog
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_vertexai import ChatVertexAI
 
 from app.models.grading import (
     QuestionData,
@@ -231,14 +231,17 @@ class SubjectiveGrader:
         self.semaphore = asyncio.Semaphore(max_concurrent)
 
         # Gemini 모델 (재사용)
-        self._gemini_model: ChatGoogleGenerativeAI | None = None
+        self._gemini_model: ChatVertexAI | None = None
 
-    def _get_gemini_model(self) -> ChatGoogleGenerativeAI:
+    def _get_gemini_model(self) -> ChatVertexAI:
         """Gemini 모델 인스턴스 생성/재사용"""
         if self._gemini_model is None:
-            self._gemini_model = ChatGoogleGenerativeAI(
+            from app.config.settings import get_settings
+            settings = get_settings()
+            self._gemini_model = ChatVertexAI(
                 model=self.model_name,
-                google_api_key=self.gemini_api_key,
+                project=settings.gcp_project_id,
+                location=settings.gcp_location,
                 temperature=0.1,
                 max_output_tokens=4000,
             )

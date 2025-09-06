@@ -18,7 +18,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 import structlog
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_vertexai import ChatVertexAI
 from app.models.text_recognition import (
     TextRecognitionAnswerResponse,
     TextRecognitionAnswer,
@@ -125,16 +125,17 @@ class BatchTextRecognitionService:
         self._progress_tracker: dict[UUID, BatchTextRecognitionProgress] = {}
 
         # Gemini 모델 (재사용)
-        self._gemini_model: ChatGoogleGenerativeAI | None = None
+        self._gemini_model: ChatVertexAI | None = None
 
-    def _get_gemini_model(self) -> ChatGoogleGenerativeAI:
+    def _get_gemini_model(self) -> ChatVertexAI:
         """Gemini 모델 인스턴스 생성/재사용"""
         if self._gemini_model is None:
             from app.config.settings import get_settings
             settings = get_settings()
-            self._gemini_model = ChatGoogleGenerativeAI(
+            self._gemini_model = ChatVertexAI(
                 model=settings.gemini_model,
-                google_api_key=self.gemini_api_key,
+                project=settings.gcp_project_id,
+                location=settings.gcp_location,
                 temperature=0.1,
                 max_output_tokens=8000,
             )
@@ -159,7 +160,7 @@ class BatchTextRecognitionService:
             async with self.rate_limiter:  # Rate limiting
                 try:
                     # 이미지 검증
-                    image_format, width, height = validate_image_file(item.image_data)
+                    _, width, height = validate_image_file(item.image_data)
 
                     # 품질 평가
                     image_quality = assess_image_quality(item.image_data, width, height)
@@ -272,7 +273,7 @@ class BatchTextRecognitionService:
                     )
 
     async def _call_gemini_vision(
-        self, image_data: bytes, model: ChatGoogleGenerativeAI
+        self, image_data: bytes, model: ChatVertexAI
     ) -> dict[str, Any]:
         """
         Gemini Vision API 호출 (기존 로직과 동일)

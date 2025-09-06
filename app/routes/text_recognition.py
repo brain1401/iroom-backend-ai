@@ -1069,7 +1069,7 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
 
             # 3. 이미지 검증
             try:
-                image_format, width, height = validate_image_file(image_data)
+                _, _, _ = validate_image_file(image_data)
             except ImageValidationError as e:
                 logger.warning(
                     "이미지 검증 실패",

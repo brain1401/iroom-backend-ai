@@ -178,7 +178,7 @@ async def cleanup_resources():
     global _repositories
     
     if _repositories:
-        exam_repo, question_repo, grading_repo = _repositories
+        exam_repo, _, _ = _repositories
         
         # MySQL 연결 정리
         from app.repositories.mysql_implementation import MySQLExamRepository

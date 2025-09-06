@@ -245,7 +245,10 @@ class RateLimitQueue:
                 backoff *= self.backoff_factor
                 self.retry_count += 1
         
-        raise last_exception
+        if last_exception:
+            raise last_exception
+        else:
+            raise RuntimeError("최대 재시도 횟수 초과")
     
     async def shutdown(self):
         """큐 처리 종료"""
