@@ -153,13 +153,15 @@ class MultipleChoiceGrader:
         return f"{choice_num}번"
 
     async def batch_grade_questions(
-        self, question_answer_pairs: list[tuple[QuestionData, StudentAnswer]]
+        self, question_answer_pairs: list[tuple[QuestionData, StudentAnswer | None]]
     ) -> list[QuestionGradingResult]:
         """
         객관식 문제 배치 채점
+        
+        답안이 None인 경우 0점 처리
 
         Args:
-            question_answer_pairs: (문제, 답안) 쌍 목록
+            question_answer_pairs: (문제, 답안) 쌍 목록 (답안은 None일 수 있음)
 
         Returns:
             list[QuestionGradingResult]: 채점 결과 목록
@@ -170,8 +172,28 @@ class MultipleChoiceGrader:
             try:
                 # 객관식 문제만 처리
                 if question.question_type == QuestionType.MULTIPLE_CHOICE:
-                    result = self.grade_question(question, answer)
-                    results.append(result)
+                    if answer is None:
+                        # 답안이 없는 경우 0점 처리
+                        result = QuestionGradingResult(
+                            question_id=question.question_id,
+                            answer_id=None,  # 답안 ID 없음
+                            is_correct=False,
+                            score=0,
+                            max_score=question.points,
+                            grading_method=self.grading_method,
+                            confidence_score=Decimal("1.00"),
+                            scoring_comment="답안 미제출로 0점 처리",
+                        )
+                        results.append(result)
+                        logger.info(
+                            "객관식 문제 미답변 처리",
+                            question_id=str(question.question_id),
+                            score=0,
+                            max_score=question.points,
+                        )
+                    else:
+                        result = self.grade_question(question, answer)
+                        results.append(result)
                 else:
                     logger.warning(
                         "객관식이 아닌 문제는 건너뜀",
@@ -182,7 +204,7 @@ class MultipleChoiceGrader:
                 logger.error(
                     "객관식 문제 채점 실패",
                     question_id=str(question.question_id),
-                    answer_id=str(answer.id),
+                    answer_id=str(answer.id) if answer else None,
                     error=str(e),
                 )
                 # 채점 실패한 문제는 결과에서 제외
@@ -431,13 +453,15 @@ class SubjectiveGrader:
             raise ValueError(f"AI 채점 응답 파싱 실패: {str(e)}")
 
     async def batch_grade_questions(
-        self, question_answer_pairs: list[tuple[QuestionData, StudentAnswer]]
+        self, question_answer_pairs: list[tuple[QuestionData, StudentAnswer | None]]
     ) -> list[QuestionGradingResult]:
         """
         주관식 문제 배치 AI 채점
+        
+        답안이 None인 경우 0점 처리
 
         Args:
-            question_answer_pairs: (문제, 답안) 쌍 목록
+            question_answer_pairs: (문제, 답안) 쌍 목록 (답안은 None일 수 있음)
 
         Returns:
             list[QuestionGradingResult]: 채점 결과 목록
@@ -445,17 +469,36 @@ class SubjectiveGrader:
         results = []
 
         # 주관식 문제만 필터링
-        subjective_pairs = [
-            (q, a)
-            for q, a in question_answer_pairs
-            if q.question_type == QuestionType.SUBJECTIVE
-        ]
+        subjective_pairs = []
+        for q, a in question_answer_pairs:
+            if q.question_type == QuestionType.SUBJECTIVE:
+                if a is None:
+                    # 답안이 없는 경우 즉시 0점 처리
+                    result = QuestionGradingResult(
+                        question_id=q.question_id,
+                        answer_id=None,  # 답안 ID 없음
+                        is_correct=False,
+                        score=0,
+                        max_score=q.points,
+                        grading_method=GradingMethod.AI_ASSISTED,
+                        confidence_score=Decimal("1.00"),
+                        scoring_comment="답안 미제출로 0점 처리",
+                    )
+                    results.append(result)
+                    logger.info(
+                        "주관식 문제 미답변 처리",
+                        question_id=str(q.question_id),
+                        score=0,
+                        max_score=q.points,
+                    )
+                else:
+                    subjective_pairs.append((q, a))
 
         if not subjective_pairs:
-            logger.info("주관식 문제가 없어서 배치 채점 건너뜀")
+            logger.info("채점할 주관식 답안이 없어서 배치 채점 건너뜀")
             return results
 
-        # 비동기 채점 태스크 생성
+        # 비동기 채점 태스크 생성 (답안이 있는 경우만)
         tasks = [
             self.grade_question(question, answer)
             for question, answer in subjective_pairs
@@ -473,7 +516,8 @@ class SubjectiveGrader:
 
         logger.info(
             "주관식 배치 AI 채점 완료",
-            total_pairs=len(subjective_pairs),
+            total_pairs=len(question_answer_pairs),
+            subjective_with_answers=len(subjective_pairs),
             successful_gradings=len(results),
         )
 
@@ -503,8 +547,11 @@ class GradingService:
             gemini_api_key: Gemini API 키
             max_concurrent_subjective: 주관식 동시 채점 최대 수
         """
+        from app.config.settings import get_settings
+        
         self.gemini_api_key = gemini_api_key
         self.max_concurrent_subjective = max_concurrent_subjective
+        self.settings = get_settings()
         
         # 채점기 인스턴스들
         self.mc_grader = MultipleChoiceGrader()
@@ -605,7 +652,7 @@ class GradingService:
                 total_questions=len(questions),
                 multiple_choice_count=len(mc_pairs),
                 subjective_count=len(subjective_pairs),
-                ai_model_version="gemini-2.5-pro"
+                ai_model_version=self.settings.grading_ai_model
             )
         )
         
@@ -623,8 +670,13 @@ class GradingService:
         self, 
         questions: list[QuestionData], 
         student_answers: list[StudentAnswer]
-    ) -> list[tuple[QuestionData, StudentAnswer]]:
-        """문제와 답안 매칭"""
+    ) -> list[tuple[QuestionData, StudentAnswer | None]]:
+        """
+        문제와 답안 매칭
+        
+        답안이 없는 문제도 포함하여 모든 문제를 반환
+        누락된 답안은 None으로 표시
+        """
         answer_map = {a.question_id: a for a in student_answers}
         pairs = []
         
@@ -632,18 +684,24 @@ class GradingService:
             if question.question_id in answer_map:
                 pairs.append((question, answer_map[question.question_id]))
             else:
+                # 답안이 없는 문제도 포함 (None으로 표시)
                 logger.warning(
                     "답안이 없는 문제 발견",
                     question_id=str(question.question_id)
                 )
+                pairs.append((question, None))
         
         return pairs
     
     def _group_by_question_type(
         self, 
-        pairs: list[tuple[QuestionData, StudentAnswer]]
-    ) -> tuple[list[tuple[QuestionData, StudentAnswer]], list[tuple[QuestionData, StudentAnswer]]]:
-        """문제 유형별 그룹핑"""
+        pairs: list[tuple[QuestionData, StudentAnswer | None]]
+    ) -> tuple[list[tuple[QuestionData, StudentAnswer | None]], list[tuple[QuestionData, StudentAnswer | None]]]:
+        """
+        문제 유형별 그룹핑
+        
+        답안이 None인 경우도 적절히 처리
+        """
         mc_pairs = []
         subjective_pairs = []
         

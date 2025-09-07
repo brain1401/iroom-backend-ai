@@ -48,28 +48,27 @@ class Settings(BaseSettings):
 
     # Google Cloud Platform 구성 (Vertex AI)
     gcp_project_id: str = Field(
-        default="question-recognition-395816", 
-        description="Google Cloud 프로젝트 ID"
+        default="question-recognition-395816", description="Google Cloud 프로젝트 ID"
     )
     gcp_location: str = Field(
-        default="us-central1", 
-        description="Vertex AI 리전 (us-central1, asia-northeast3 등)"
+        default="us-central1",
+        description="Vertex AI 리전 (us-central1, asia-northeast3 등)",
     )
-    
+
     # Gemini/Vertex AI 모델 구성
     gemini_model: str = Field(
-        default="gemini-2.0-flash-exp",  # Vertex AI 지원 모델
-        description="Vertex AI Gemini 모델명"
+        default="gemini-2.5-pro",  # Vertex AI 지원 모델
+        description="Vertex AI Gemini 모델명",
     )
     gemini_max_tokens: int = Field(default=32000, description="요청당 최대 토큰 수")
     gemini_temperature: float = Field(
-        default=0.7, description="모델 온도 (창의성 수준)"
+        default=0.3, description="모델 온도 (창의성 수준)"
     )
-    
+
     # 레거시 API 키 설정 (OAuth2 전환 후 비활성화)
     gemini_api_key: str | None = Field(
-        default=None, 
-        description="[DEPRECATED] Google Gemini API 키 - Vertex AI OAuth2 사용"
+        default=None,
+        description="[DEPRECATED] Google Gemini API 키 - Vertex AI OAuth2 사용",
     )
 
     # Rate Limiting 구성 (Vertex AI는 더 높은 한도 제공)
@@ -142,7 +141,7 @@ class Settings(BaseSettings):
         default=3, description="주관식 동시 채점 최대 수"
     )
     grading_ai_model: str = Field(
-        default="gemini-2.0-flash-exp", description="채점용 AI 모델 (Vertex AI)"
+        default="gemini-2.5-pro", description="채점용 AI 모델 (Vertex AI)"
     )
     grading_confidence_threshold: float = Field(
         default=0.7, description="AI 채점 신뢰도 임계값 (이하시 수동 검토)"

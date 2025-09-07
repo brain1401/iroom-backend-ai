@@ -1,0 +1,48 @@
+{
+  "exam_id": "2beeab06-8adb-11f0-80d3-0242c0a81002",
+  "student_id": 126,
+  "student_name": "홍태극",
+  "force_grading": true,
+  "answers": [
+    {
+      "question_id": "cf6c42bc-8ada-11f0-80d3-0242c0a81002",
+      "answer_text": "이쑤시개"
+    },
+    {
+      "question_id": "cf6c40f3-8ada-11f0-80d3-0242c0a81002",
+      "answer_text": "교정"
+    },
+    {
+      "question_id": "cf6c46eb-8ada-11f0-80d3-0242c0a81002",
+      "answer_text": "달팽이"
+    },
+    {
+      "question_id": "cf6c47b5-8ada-11f0-80d3-0242c0a81002",
+      "answer_text": "혼돈"
+    },
+    {
+      "question_id": "cf6b3552-8ada-11f0-80d3-0242c0a81002",
+      "answer_text": "토론"
+    },
+    {
+      "question_id": "cf6c3b66-8ada-11f0-80d3-0242c0a81002",
+      "answer_text": "미스테이크"
+    },
+    {
+      "question_id": "cf6b3f51-8ada-11f0-80d3-0242c0a81002",
+      "answer_text": "신라면세점"
+    },
+    {
+      "question_id": "cf6c461e-8ada-11f0-80d3-0242c0a81002",
+      "answer_text": "양념"
+    },
+    {
+      "question_id": "cf6c41d3-8ada-11f0-80d3-0242c0a81002",
+      "answer_text": "콘돌리자 라이스"
+    },
+    {
+      "question_id": "cf6c3dee-8ada-11f0-80d3-0242c0a81002",
+      "answer_text": "짜왕"
+    }
+  ]
+}

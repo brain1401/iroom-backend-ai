@@ -22,8 +22,6 @@ import structlog
 
 from app.models.grading import (
     QuestionData,
-    StudentAnswer,
-    StudentAnswerSheet,
     StudentAnswerSheetQuestion, 
     ExamGradingResult,
     QuestionGradingResult,
@@ -265,79 +263,75 @@ class MySQLExamRepository(ExamRepositoryInterface):
                 )
                 return None
     
-    async def create_submission(self, exam_id: UUID, student_id: int, student_name: str) -> UUID:
+    async def create_submission(
+        self, 
+        exam_id: UUID, 
+        student_id: int,
+        submission_id: UUID | None = None
+    ) -> UUID:
         """
-        새로운 시험 제출 생성
+        새로운 제출 생성
         
         Args:
             exam_id: 시험 ID
             student_id: 학생 ID
-            student_name: 학생 이름
+            submission_id: 제출 ID (없으면 자동 생성)
             
         Returns:
             UUID: 생성된 제출 ID
         """
-        from app.utils.uuid_utils import generate_uuidv7
+        from app.utils.uuid_utils import generate_uuidv7, uuid_to_binary
         
-        submission_id = generate_uuidv7()
+        submission_id = submission_id or generate_uuidv7()
+        
         pool = await self.connection.get_pool()
-        
         async with pool.acquire() as conn:
             async with conn.cursor() as cursor:
-                query = """
-                INSERT INTO exam_submission (id, exam_id, student_id, submitted_at)
-                VALUES (UUID_TO_BIN(%s), UUID_TO_BIN(%s), %s, NOW())
-                """
-                await cursor.execute(query, (str(submission_id), str(exam_id), student_id))
+                await cursor.execute(
+                    """
+                    INSERT INTO exam_submission (id, exam_id, student_id, created_at, updated_at)
+                    VALUES (%s, %s, %s, NOW(), NOW())
+                    """,
+                    (uuid_to_binary(submission_id), uuid_to_binary(exam_id), student_id)
+                )
                 await conn.commit()
                 
-                logger.info(
-                    "시험 제출 생성 완료",
-                    submission_id=str(submission_id),
-                    exam_id=str(exam_id),
-                    student_id=student_id
-                )
-                
-                return submission_id
+        return submission_id
     
-    async def create_answer_sheet(self, submission_id: UUID, student_id: int, student_name: str) -> UUID:
+    async def create_answer_sheet(
+        self,
+        submission_id: UUID,
+        student_name: str,
+        answer_sheet_id: UUID | None = None
+    ) -> UUID:
         """
         학생 답안지 생성
         
         Args:
             submission_id: 제출 ID
-            student_id: 학생 ID (호환성을 위해 유지하지만 사용하지 않음)
             student_name: 학생 이름
+            answer_sheet_id: 답안지 ID (없으면 자동 생성)
             
         Returns:
             UUID: 생성된 답안지 ID
         """
-        from app.utils.uuid_utils import generate_uuidv7
+        from app.utils.uuid_utils import generate_uuidv7, uuid_to_binary
         
-        answer_sheet_id = generate_uuidv7()
+        answer_sheet_id = answer_sheet_id or generate_uuidv7()
+        
         pool = await self.connection.get_pool()
-        
         async with pool.acquire() as conn:
             async with conn.cursor() as cursor:
-                # student_answer_sheet 테이블에는 student_id 컬럼이 없음
-                query = """
-                INSERT INTO student_answer_sheet (id, submission_id, student_name)
-                VALUES (UUID_TO_BIN(%s), UUID_TO_BIN(%s), %s)
-                """
-                await cursor.execute(query, (
-                    str(answer_sheet_id),
-                    str(submission_id),
-                    student_name
-                ))
+                await cursor.execute(
+                    """
+                    INSERT INTO student_answer_sheet (id, submission_id, student_name, created_at, updated_at)
+                    VALUES (%s, %s, %s, NOW(), NOW())
+                    """,
+                    (uuid_to_binary(answer_sheet_id), uuid_to_binary(submission_id), student_name)
+                )
                 await conn.commit()
                 
-                logger.info(
-                    "학생 답안지 생성 완료",
-                    answer_sheet_id=str(answer_sheet_id),
-                    submission_id=str(submission_id)
-                )
-                
-                return answer_sheet_id
+        return answer_sheet_id
     
     async def create_answer_sheet_questions(
         self,
@@ -612,7 +606,7 @@ class MySQLGradingRepository(GradingRepositoryInterface):
                         INSERT INTO exam_result (
                             id, submission_id, exam_sheet_id,
                             graded_at, total_score, status,
-                            scoring_comment, version
+                            grading_comment, version
                         ) VALUES (
                             UUID_TO_BIN(%s), UUID_TO_BIN(%s), UUID_TO_BIN(%s),
                             %s, %s, %s, %s, %s
@@ -637,7 +631,7 @@ class MySQLGradingRepository(GradingRepositoryInterface):
                             INSERT INTO exam_result_question (
                                 id, exam_result_id, question_id, answer_id,
                                 is_correct, score, max_score,
-                                grading_method, scoring_comment, confidence_score,
+                                grading_method, grading_comment, confidence_score,
                                 created_at, updated_at
                             ) VALUES (
                                 UUID_TO_BIN(UUID()), UUID_TO_BIN(%s), UUID_TO_BIN(%s), UUID_TO_BIN(%s),
@@ -655,7 +649,7 @@ class MySQLGradingRepository(GradingRepositoryInterface):
                                     question_result.score,
                                     question_result.max_score,
                                     question_result.grading_method.value,
-                                    question_result.grading_comment,
+                                    question_result.scoring_comment,
                                     question_result.confidence_score,
                                     question_result.created_at,
                                     question_result.created_at  # updated_at도 동일하게 설정
@@ -753,7 +747,7 @@ class MySQLGradingRepository(GradingRepositoryInterface):
                         max_score=row['max_score'],
                         grading_method=GradingMethod(row['grading_method']),
                         confidence_score=Decimal(str(row['confidence_score'])) if row['confidence_score'] else None,
-                        grading_comment=row['grading_comment'],
+                        scoring_comment=row['grading_comment'],
                         created_at=row['created_at']
                     )
                     question_results.append(question_result)
@@ -910,7 +904,7 @@ class MySQLGradingRepository(GradingRepositoryInterface):
                         question_result.score,
                         question_result.max_score,
                         question_result.grading_method.value,
-                        question_result.grading_comment,
+                        question_result.scoring_comment,
                         question_result.confidence_score,
                         question_result.created_at,
                         datetime.now()

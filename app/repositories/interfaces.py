@@ -13,8 +13,7 @@ Repository 인터페이스 정의
 from abc import ABC, abstractmethod
 from uuid import UUID
 from app.models.grading import (
-    QuestionData, 
-    StudentAnswer,
+    QuestionData,
     StudentAnswerSheetQuestion,
     ExamGradingResult,
     QuestionGradingResult

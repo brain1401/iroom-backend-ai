@@ -135,7 +135,7 @@ class QuestionGradingResult(BaseModel):
     """
 
     question_id: UUID = Field(..., description="문제 ID")
-    answer_id: UUID = Field(..., description="답안 ID")
+    answer_id: UUID | None = Field(default=None, description="답안 ID (미답변시 None)")
     is_correct: bool | None = Field(default=None, description="정답 여부")
     score: int | None = Field(default=None, description="획득 점수")
     max_score: int = Field(..., ge=1, description="문제 만점")
@@ -428,14 +428,12 @@ class SubmissionAndGradingRequest(BaseModel):
     필드:
     - exam_id: 시험 ID
     - student_id: 학생 ID
-    - student_name: 학생 이름
     - answers: 답안 리스트
     - force_grading: 즉시 채점 여부 (기본 true)
     - grading_options: 채점 옵션
     """
     exam_id: UUID = Field(..., description="시험 고유 ID")
     student_id: int = Field(..., gt=0, description="학생 ID")
-    student_name: str = Field(..., min_length=1, max_length=100, description="학생 이름")
     answers: list[AnswerSubmission] = Field(
         ..., 
         min_length=1, 
@@ -453,7 +451,6 @@ class SubmissionAndGradingRequest(BaseModel):
             "example": {
                 "exam_id": "018e3d5a-7b4c-7000-8000-000000000000",
                 "student_id": 12345,
-                "student_name": "김철수",
                 "answers": [
                     {
                         "question_id": "018e3d5a-7b4c-7000-8000-000000000001",

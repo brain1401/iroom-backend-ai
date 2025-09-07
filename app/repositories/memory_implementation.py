@@ -22,7 +22,6 @@ import structlog
 
 from app.models.grading import (
     QuestionData,
-    StudentAnswer,
     StudentAnswerSheet,
     StudentAnswerSheetQuestion,
     ExamGradingResult, 
@@ -150,7 +149,7 @@ class InMemoryExamRepository(ExamRepositoryInterface):
         """
         # 1. submission_id로 answer_sheet 찾기
         answer_sheet = None
-        for sheet_id, sheet in self.storage.student_answer_sheets.items():
+        for _, sheet in self.storage.student_answer_sheets.items():
             if sheet.submission_id == submission_id:
                 answer_sheet = sheet
                 break
@@ -164,7 +163,7 @@ class InMemoryExamRepository(ExamRepositoryInterface):
         
         # 2. answer_sheet_id로 실제 답안들 찾기
         answers = []
-        for answer_id, answer in self.storage.student_answers.items():
+        for _, answer in self.storage.student_answers.items():
             if answer.student_answer_sheet_id == answer_sheet.id:
                 answers.append(answer)
         
@@ -261,7 +260,7 @@ class InMemoryExamRepository(ExamRepositoryInterface):
         self, 
         exam_id: UUID, 
         student_id: int,
-        student_name: str
+        submission_id: UUID | None = None
     ) -> UUID:
         """
         새로운 제출 생성
@@ -276,30 +275,25 @@ class InMemoryExamRepository(ExamRepositoryInterface):
         """
         from app.utils.uuid_utils import generate_uuidv7
         
-        submission_id = generate_uuidv7()
+        submission_id = submission_id or generate_uuidv7()
         
-        submission_data = {
-            "id": str(submission_id),
-            "exam_id": str(exam_id),
-            "student_id": student_id,
-            "submitted_at": datetime.now()
+        # 제출 데이터 생성
+        submission = {
+            'id': submission_id,
+            'exam_id': exam_id,
+            'student_id': student_id,
+            'created_at': datetime.now(),
+            'updated_at': datetime.now()
         }
         
-        self.storage.submissions[submission_id] = submission_data
-        
-        logger.info(
-            "제출 생성 완료 (메모리)",
-            submission_id=str(submission_id),
-            exam_id=str(exam_id)
-        )
-        
+        self.storage.submissions[submission_id] = submission
         return submission_id
     
     async def create_answer_sheet(
         self,
         submission_id: UUID,
-        student_id: int,
-        student_name: str
+        student_name: str,
+        answer_sheet_id: UUID | None = None
     ) -> UUID:
         """
         학생 답안지 생성
@@ -314,24 +308,17 @@ class InMemoryExamRepository(ExamRepositoryInterface):
         """
         from app.utils.uuid_utils import generate_uuidv7
         
-        answer_sheet_id = generate_uuidv7()
+        sheet_id = answer_sheet_id or generate_uuidv7()
         
-        sheet = StudentAnswerSheet(
-            id=answer_sheet_id,
+        # StudentAnswerSheet 객체 생성
+        answer_sheet = StudentAnswerSheet(
+            id=sheet_id,
             submission_id=submission_id,
-            student_id=student_id,
             student_name=student_name
         )
         
-        self.storage.student_answer_sheets[answer_sheet_id] = sheet
-        
-        logger.info(
-            "답안지 생성 완료 (메모리)",
-            answer_sheet_id=str(answer_sheet_id),
-            submission_id=str(submission_id)
-        )
-        
-        return answer_sheet_id
+        self.storage.student_answer_sheets[sheet_id] = answer_sheet
+        return sheet_id
     
     async def create_answer_sheet_questions(
         self,
@@ -517,7 +504,7 @@ class InMemoryGradingRepository(GradingRepositoryInterface):
         
         # 기본 채점 결과 객체 생성
         grading_result = ExamGradingResult(
-            id=result_id,
+            result_id=result_id,
             submission_id=submission_id,
             exam_sheet_id=exam_sheet_id,
             graded_at=datetime.now(),

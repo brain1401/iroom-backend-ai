@@ -10,9 +10,7 @@ UUIDv7 생성 및 변환 기능 제공
 - 시간 정보 추출
 """
 
-import os
 import time
-import random
 from uuid import UUID
 from typing import Optional
 
@@ -28,7 +26,10 @@ def generate_uuidv7() -> UUID:
         UUID: 생성된 UUIDv7
     """
     from uuid_extensions import uuid7
-    return uuid7()
+    result = uuid7()
+    # uuid7()는 기본적으로 UUID 객체를 반환
+    assert isinstance(result, UUID)
+    return result
 
 
 def uuid_to_binary(uuid_obj: UUID) -> bytes:
@@ -61,7 +62,7 @@ def binary_to_uuid(binary_data: bytes) -> UUID:
     return UUID(bytes=binary_data)
 
 
-def extract_timestamp_from_uuidv7(uuid_obj: UUID) -> Optional[float]:
+def extract_timestamp_from_uuidv7(uuid_obj: UUID | str | int | bytes) -> Optional[float]:
     """
     UUIDv7에서 타임스탬프 추출
     
@@ -69,11 +70,22 @@ def extract_timestamp_from_uuidv7(uuid_obj: UUID) -> Optional[float]:
     uuid7 라이브러리 사양에 따른 정확한 타임스탬프 추출
     
     Args:
-        uuid_obj: UUIDv7 객체
+        uuid_obj: UUIDv7 객체, 문자열, 정수, 또는 바이트
         
     Returns:
         float: Unix 타임스탬프 (초 단위) 또는 None (v7이 아닌 경우)
     """
+    # UUID 객체로 변환
+    if not isinstance(uuid_obj, UUID):
+        if isinstance(uuid_obj, str):
+            uuid_obj = UUID(uuid_obj)
+        elif isinstance(uuid_obj, int):
+            uuid_obj = UUID(int=uuid_obj)
+        elif isinstance(uuid_obj, bytes):
+            uuid_obj = UUID(bytes=uuid_obj)
+        else:
+            return None
+    
     if uuid_obj.version != 7:
         return None
     
@@ -107,7 +119,10 @@ def generate_ordered_uuid() -> UUID:
         UUID: 정렬 가능한 UUID
     """
     from uuid_extensions import uuid7
-    return uuid7()
+    result = uuid7()
+    # uuid7()는 기본적으로 UUID 객체를 반환
+    assert isinstance(result, UUID)
+    return result
 
 
 # 테스트 코드
@@ -115,7 +130,8 @@ if __name__ == "__main__":
     from uuid_extensions import uuid7, uuid7str
     
     # UUIDv7 생성 테스트
-    uuid1 = uuid7()
+    uuid1 = uuid7(as_type='uuid')
+    assert isinstance(uuid1, UUID)  # 타입 체커를 위한 명시적 확인
     print(f"Generated UUIDv7: {uuid1}")
     print(f"Version: {uuid1.version}")
     
@@ -141,7 +157,8 @@ if __name__ == "__main__":
     
     # 순서 테스트
     time.sleep(0.001)  # 1ms 대기
-    uuid2 = uuid7()
+    uuid2 = uuid7(as_type='uuid')
+    assert isinstance(uuid2, UUID)  # 타입 체커를 위한 명시적 확인
     print("\nUUID1:", uuid1)
     print("UUID2:", uuid2)
     print("UUID1 < UUID2:", str(uuid1) < str(uuid2))

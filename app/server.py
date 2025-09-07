@@ -23,7 +23,6 @@ from app.middleware.rate_limit import setup_rate_limiting
 from app.middleware.auth import setup_authentication
 from app.middleware.logging import setup_logging
 from app.routes.health import setup_health_routes
-from app.routes.gemini import setup_gemini_routes
 from app.routes.text_recognition import setup_text_recognition_routes  # 글자인식 (메인)
 from app.routes.grading import setup_grading_routes
 from app.utils.errors import setup_error_handlers
@@ -72,7 +71,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # Setup routes
     setup_health_routes(app, settings)
-    setup_gemini_routes(app, settings)
     setup_text_recognition_routes(app, settings)  # 글자인식 (메인)
     setup_grading_routes(app, settings)  # 채점 시스템
 
@@ -179,8 +177,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             # 보안 요구사항을 보호된 엔드포인트에 추가
             for path, methods in openapi_schema["paths"].items():
-                # Gemini와 OCR 엔드포인트에 인증 적용 (헬스체크 제외)
-                if (path.startswith("/gemini/") and path != "/gemini/health") or (
+                # OCR 엔드포인트에 인증 적용 (헬스체크 제외)
+                if (
                     path.startswith("/text-recognition/")
                     and path != "/text-recognition/health"
                 ):
@@ -262,7 +260,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 },
             },
             "503": {
-                "description": "Service Unavailable - Gemini API 비활성화",
+                "description": "Service Unavailable - 서비스 비활성화",
                 "content": {
                     "application/json": {
                         "schema": {"$ref": "#/components/schemas/ErrorResponse"}
@@ -275,13 +273,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for path, methods in openapi_schema["paths"].items():
             for method, details in methods.items():
                 if "responses" in details:
-                    # 인증이 필요한 엔드포인트에 401 추가
-                    if (
-                        settings.require_api_key
-                        and path.startswith("/gemini/")
-                        and path != "/gemini/health"
-                    ):
-                        details["responses"]["401"] = error_responses["401"]
+
 
                     # Rate limiting이 활성화된 엔드포인트에 429 추가
                     if settings.rate_limit_enabled and not path.startswith("/health/"):
@@ -290,10 +282,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     # 모든 엔드포인트에 500 추가
                     details["responses"]["500"] = error_responses["500"]
 
-                    # Gemini와 OCR 엔드포인트에 503 추가
-                    if path.startswith("/gemini/") or path.startswith(
-                        "/text-recognition/"
-                    ):
+                    # OCR 엔드포인트에 503 추가
+                    if path.startswith("/text-recognition/"):
                         details["responses"]["503"] = error_responses["503"]
 
         app.openapi_schema = openapi_schema
