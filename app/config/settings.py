@@ -56,6 +56,10 @@ class Settings(BaseSettings):
         default=0.7, description="모델 온도 (창의성 수준)"
     )
 
+    # GCP/Vertex AI 구성
+    gcp_project_id: str | None = Field(default=None, description="GCP 프로젝트 ID")
+    gcp_location: str | None = Field(default=None, description="GCP 리전 (예: us-central1)")
+
     # Rate Limiting 구성 (Gemini 2.5 Pro 제약 기준)
     rate_limit_requests_per_minute: int = Field(
         default=15, description="분당 요청 수 (무료: 15, 유료: 60)"
