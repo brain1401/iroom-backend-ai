@@ -46,26 +46,37 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, description="서버 포트")
     workers: int = Field(default=1, description="워커 프로세스 수")
 
-    # Gemini API 구성
-    gemini_api_key: str | None = Field(default=None, description="Google Gemini API 키")
+    # Google Cloud Platform 구성 (Vertex AI)
+    gcp_project_id: str = Field(
+        default="question-recognition-395816", description="Google Cloud 프로젝트 ID"
+    )
+    gcp_location: str = Field(
+        default="us-central1",
+        description="Vertex AI 리전 (us-central1, asia-northeast3 등)",
+    )
+
+    # Gemini/Vertex AI 모델 구성
     gemini_model: str = Field(
-        default="gemini-2.5-pro", description="Gemini 모델명 (Vision 지원)"
+        default="gemini-2.5-pro",  # Vertex AI 지원 모델
+        description="Vertex AI Gemini 모델명",
     )
     gemini_max_tokens: int = Field(default=32000, description="요청당 최대 토큰 수")
     gemini_temperature: float = Field(
-        default=0.7, description="모델 온도 (창의성 수준)"
+        default=0.3, description="모델 온도 (창의성 수준)"
     )
 
-    # GCP/Vertex AI 구성
-    gcp_project_id: str | None = Field(default=None, description="GCP 프로젝트 ID")
-    gcp_location: str | None = Field(default=None, description="GCP 리전 (예: us-central1)")
+    # 레거시 API 키 설정 (OAuth2 전환 후 비활성화)
+    gemini_api_key: str | None = Field(
+        default=None,
+        description="[DEPRECATED] Google Gemini API 키 - Vertex AI OAuth2 사용",
+    )
 
-    # Rate Limiting 구성 (Gemini 2.5 Pro 제약 기준)
+    # Rate Limiting 구성 (Vertex AI는 더 높은 한도 제공)
     rate_limit_requests_per_minute: int = Field(
-        default=15, description="분당 요청 수 (무료: 15, 유료: 60)"
+        default=60, description="분당 요청 수 (Vertex AI 기준)"
     )
     rate_limit_tokens_per_day: int = Field(
-        default=1000000, description="일일 토큰 수 (무료: 1M, 유료: 10M)"
+        default=10000000, description="일일 토큰 수 (Vertex AI 기준)"
     )
     rate_limit_enabled: bool = Field(default=True, description="Rate Limiting 활성화")
 
@@ -130,7 +141,7 @@ class Settings(BaseSettings):
         default=3, description="주관식 동시 채점 최대 수"
     )
     grading_ai_model: str = Field(
-        default="gemini-2.5-pro", description="채점용 AI 모델"
+        default="gemini-2.5-pro", description="채점용 AI 모델 (Vertex AI)"
     )
     grading_confidence_threshold: float = Field(
         default=0.7, description="AI 채점 신뢰도 임계값 (이하시 수동 검토)"

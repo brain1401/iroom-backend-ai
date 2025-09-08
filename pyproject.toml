@@ -24,6 +24,9 @@ dependencies = [
   "python-multipart>=0.0.6",
   "rich>=14.1.0",
   "aiomysql>=0.1.1",
+  "langchain-google-vertexai>=2.0.28",
+  "cryptography>=45.0.7",
+  "uuid7>=0.1.0",
 ]
 
 [project.optional-dependencies]
@@ -88,3 +91,11 @@ verboseOutput = true
 
 # 엄격도 7/10 설정 - 실용적이면서도 강력한 타입 체킹
 typeCheckingMode = "standard"
+
+# 사용하지 않는 코드 검사
+# FastAPI 라우터와 핸들러는 데코레이터로 등록되므로 false positive 방지
+reportUnusedFunction = false  
+reportUnusedVariable = true
+reportUnusedImport = true
+reportUnusedClass = true
+reportUnusedExpression = true

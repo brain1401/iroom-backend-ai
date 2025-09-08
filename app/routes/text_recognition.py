@@ -13,13 +13,15 @@
 
 import asyncio
 import time
+from datetime import datetime, timedelta
 
 from typing import Any
-from uuid import UUID
-from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, BackgroundTasks
+from uuid import UUID, uuid4
+from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, BackgroundTasks, Form
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 import structlog
+import httpx
 
 
 from app.config.settings import Settings, get_settings
@@ -28,6 +30,9 @@ from app.models.text_recognition import (
     TextRecognitionAnswerResponse,
     TextRecognitionMetadata,
     TextRecognitionErrorResponse,
+    AsyncTextRecognitionSubmitResponse,
+    AsyncTextRecognitionCallbackData,
+    AsyncJobStatus,
 )
 from app.utils.image_processing import (
     validate_image_file,
@@ -41,9 +46,15 @@ from app.services.monitoring import get_metrics_collector, TextRecognitionMetric
 
 logger = structlog.get_logger("text_recognition_routes")
 
+# 전역 상태 변수 - 백그라운드 작업 중복 방지용
+_polling_started: bool = False
+
 
 # 전역 배치 상태 관리
 _batch_progress_storage: dict[UUID, dict] = {}
+
+# 전역 비동기 작업 상태 관리
+_async_job_storage: dict[UUID, AsyncJobStatus] = {}
 
 
 async def _execute_batch_processing(
@@ -127,7 +138,7 @@ async def _execute_batch_processing(
                         "item_id": str(item.item_id),
                         "filename": item.filename,
                         "success": True,
-                        "result": result.model_dump() if result else None,
+                        "result": result.model_dump(mode='json') if result else None,
                     }
                 )
                 _batch_progress_storage[batch_id]["completed_items"] += 1
@@ -186,6 +197,452 @@ async def _execute_batch_processing(
 
         _batch_progress_storage[batch_id]["status"] = "failed"
         _batch_progress_storage[batch_id]["error"] = str(e)
+
+async def _send_callback_with_retry(
+    job_id: UUID,
+    callback_url: str,
+    callback_data: AsyncTextRecognitionCallbackData,
+    max_retries: int = 10,
+    retry_delay: float = 2.0,
+) -> bool:
+    """
+    콜백 전송 (재시도 로직 포함)
+    
+    Args:
+        job_id: 작업 ID
+        callback_url: 콜백 URL
+        callback_data: 전송할 데이터
+        max_retries: 최대 재시도 횟수
+        retry_delay: 재시도 간격 (초)
+    
+    Returns:
+        bool: 전송 성공 여부
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    callback_url,
+                    json=callback_data.model_dump(mode='json'),
+                    headers={
+                        "Content-Type": "application/json",
+                        "User-Agent": "iRoom-AI-Backend/1.0.0"
+                    }
+                )
+                
+                # 성공 응답 확인 (2xx)
+                if 200 <= response.status_code < 300:
+                    logger.info(
+                        "콜백 전송 성공",
+                        job_id=str(job_id),
+                        callback_url=callback_url,
+                        status_code=response.status_code,
+                        attempt=attempt + 1
+                    )
+                    return True
+                else:
+                    logger.warning(
+                        "콜백 전송 실패 - HTTP 오류",
+                        job_id=str(job_id),
+                        callback_url=callback_url,
+                        status_code=response.status_code,
+                        attempt=attempt + 1
+                    )
+                    
+        except httpx.RequestError as e:
+            logger.warning(
+                "콜백 전송 실패 - 네트워크 오류",
+                job_id=str(job_id),
+                callback_url=callback_url,
+                error=str(e),
+                attempt=attempt + 1
+            )
+        except Exception as e:
+            logger.error(
+                "콜백 전송 중 예상치 못한 오류",
+                job_id=str(job_id),
+                callback_url=callback_url,
+                error=str(e),
+                attempt=attempt + 1
+            )
+        
+        # 마지막 시도가 아니면 재시도 대기
+        if attempt < max_retries:
+            await asyncio.sleep(retry_delay * (2 ** attempt))  # 지수 백오프
+    
+    logger.error(
+        "콜백 전송 최종 실패",
+        job_id=str(job_id),
+        callback_url=callback_url,
+        max_retries=max_retries
+    )
+    return False
+
+async def _poll_pending_jobs():
+    """
+    콜백 미수신 작업들을 주기적으로 확인하는 폴링 메커니즘
+    
+    AI 서버에서 콜백을 전송하지 않는 경우의 백업 시스템
+    - 30초 이상 pending 상태인 job들을 확인
+    - AI 서버에 직접 상태 조회
+    - 필요시 강제 콜백 전송
+    """
+    try:
+        current_time = datetime.now()
+        pending_jobs = []
+        
+        # 30초 이상 pending 상태인 job들 찾기
+        for job_id, job_status in _async_job_storage.items():
+            if (job_status.status in ["submitted", "processing"] and 
+                job_status.started_at and 
+                (current_time - job_status.started_at).total_seconds() > 30):
+                pending_jobs.append((job_id, job_status))
+        
+        if not pending_jobs:
+            return
+            
+        logger.info(
+            "콜백 미수신 작업 발견, 폴링 시작",
+            pending_count=len(pending_jobs)
+        )
+        
+        # 각 pending job에 대해 AI 서버 상태 확인
+        for job_id, job_status in pending_jobs:
+            try:
+                # AI 서버에 상태 조회 (여기서는 mock 응답, 실제로는 AI 서버 API 호출)
+                # TODO: 실제 AI 서버 상태 조회 API 연동 필요
+                
+                # 일단 타임아웃된 경우로 처리
+                elapsed_seconds = (current_time - job_status.started_at).total_seconds()
+                
+                if elapsed_seconds > 300:  # 5분 초과
+                    # 타임아웃 처리
+                    job_status.status = "failed"
+                    job_status.completed_at = current_time
+                    
+                    error_response = TextRecognitionErrorResponse(
+                        error_code="PROCESSING_TIMEOUT_DETECTED_BY_POLLING",
+                        error_message=f"폴링에서 타임아웃 감지: {elapsed_seconds:.0f}초 경과",
+                        details="AI server callback not received within timeout period"
+                    )
+                    job_status.error = error_response
+                    
+                    # 강제 콜백 전송
+                    callback_data = AsyncTextRecognitionCallbackData(
+                        job_id=job_id,
+                        status="failed",
+                        error=error_response,
+                        processing_time_ms=int(elapsed_seconds * 1000),
+                        metadata=job_status.original_metadata
+                    )
+                    
+                    await _send_callback_with_retry(
+                        job_id, 
+                        job_status.callback_url, 
+                        callback_data,
+                        max_retries=5  # 폴링에서는 더 적은 재시도
+                    )
+                    
+                    logger.warning(
+                        "폴링으로 타임아웃 처리 완료",
+                        job_id=str(job_id),
+                        elapsed_seconds=elapsed_seconds
+                    )
+                    
+            except Exception as e:
+                logger.error(
+                    "폴링 중 개별 작업 처리 실패",
+                    job_id=str(job_id),
+                    error=str(e)
+                )
+                
+    except Exception as e:
+        logger.error(
+            "폴링 메커니즘 실행 중 오류",
+            error=str(e)
+        )
+
+
+async def _start_polling_background_task():
+    """
+    폴링 백그라운드 작업 시작
+    """
+    while True:
+        try:
+            await _poll_pending_jobs()
+            await asyncio.sleep(30)  # 30초마다 폴링
+        except Exception as e:
+            logger.error("폴링 백그라운드 작업 오류", error=str(e))
+            await asyncio.sleep(60)  # 오류 시 1분 대기
+
+
+async def _process_async_text_recognition(
+    job_id: UUID,
+    image_data: bytes,
+    filename: str,
+    use_cache: bool = True,
+    use_content_hash: bool = False,
+    timeout_seconds: int = 300,  # 5분 타임아웃
+) -> None:
+    """
+    비동기 글자인식 처리 백그라운드 함수
+    
+    이미지 검증, 처리, 콜백 전송을 모두 처리하며 타임아웃 제어
+    
+    Args:
+        job_id: 작업 ID
+        image_data: 이미지 데이터
+        filename: 파일명
+        use_cache: 캐시 사용 여부
+        use_content_hash: 내용 기반 해시 사용 여부
+        timeout_seconds: 처리 타임아웃 (초)
+    """
+    job_status = _async_job_storage.get(job_id)
+    if not job_status:
+        logger.error("비동기 작업 상태 없음", job_id=str(job_id))
+        return
+        
+    # 시작 시간 기록
+    start_time = time.time()
+    job_status.started_at = datetime.now()
+    job_status.status = "processing"
+    
+    logger.info(
+        "비동기 글자인식 처리 시작",
+        job_id=str(job_id),
+        filename=filename,
+        use_cache=use_cache,
+        timeout_seconds=timeout_seconds
+    )
+    
+    # 타임아웃 처리를 위한 래퍼
+    try:
+        # asyncio.wait_for로 타임아웃 제어
+        await asyncio.wait_for(
+            _process_with_timeout(
+                job_id, job_status, image_data, filename, 
+                use_cache, use_content_hash, start_time
+            ),
+            timeout=timeout_seconds
+        )
+    except asyncio.TimeoutError:
+        # 타임아웃 처리
+        processing_time_ms = int((time.time() - start_time) * 1000)
+        job_status.status = "failed" 
+        job_status.completed_at = datetime.now()
+        
+        error_response = TextRecognitionErrorResponse(
+            error_code="PROCESSING_TIMEOUT",
+            error_message=f"처리 시간이 {timeout_seconds}초를 초과했습니다.",
+            details=f"Timeout after {timeout_seconds} seconds"
+        )
+        job_status.error = error_response
+        
+        # 타임아웃 콜백 전송
+        callback_data = AsyncTextRecognitionCallbackData(
+            job_id=job_id,
+            status="failed", 
+            error=error_response,
+            processing_time_ms=processing_time_ms,
+            metadata=job_status.original_metadata
+        )
+        
+        await _send_callback_with_retry(
+            job_id, job_status.callback_url, callback_data
+        )
+        
+        logger.error(
+            "비동기 처리 타임아웃", 
+            job_id=str(job_id),
+            timeout_seconds=timeout_seconds,
+            processing_time_ms=processing_time_ms
+        )
+    except Exception as e:
+        # 예상치 못한 오류
+        processing_time_ms = int((time.time() - start_time) * 1000)
+        job_status.status = "failed"
+        job_status.completed_at = datetime.now()
+        
+        error_response = TextRecognitionErrorResponse(
+            error_code="ASYNC_PROCESSING_FAILED",
+            error_message="비동기 글자인식 처리 중 오류가 발생했습니다.",
+            details=str(e)
+        )
+        job_status.error = error_response
+        
+        callback_data = AsyncTextRecognitionCallbackData(
+            job_id=job_id,
+            status="failed",
+            error=error_response, 
+            processing_time_ms=processing_time_ms,
+            metadata=job_status.original_metadata
+        )
+        
+        await _send_callback_with_retry(
+            job_id, job_status.callback_url, callback_data
+        )
+        
+        logger.error(
+            "비동기 처리 예상치 못한 오류",
+            job_id=str(job_id),
+            error=str(e),
+            processing_time_ms=processing_time_ms
+        )
+
+
+async def _process_with_timeout(
+    job_id: UUID,
+    job_status: AsyncJobStatus,
+    image_data: bytes, 
+    filename: str,
+    use_cache: bool,
+    use_content_hash: bool,
+    start_time: float
+) -> None:
+    """
+    타임아웃 처리를 위한 실제 처리 로직 분리
+    """
+    
+    # 1단계: 이미지 검증 (백그라운드에서 수행)
+    try:
+        from PIL import Image
+        import io
+        
+        # PIL로 이미지 유효성 검사
+        image_stream = io.BytesIO(image_data)
+        pil_image = Image.open(image_stream)
+        pil_image.verify()  # 이미지 무결성 검증
+        
+        # 이미지 스트림 리셋 (verify 후 재사용 위해)
+        image_stream.seek(0)
+        pil_image = Image.open(image_stream)
+        
+        logger.info(
+            "이미지 검증 성공",
+            job_id=str(job_id),
+            filename=filename,
+            format=pil_image.format,
+            size=pil_image.size
+        )
+        
+    except Exception as img_error:
+        # 이미지 검증 실패 - 콜백 전송
+        processing_time_ms = int((time.time() - start_time) * 1000)
+        job_status.status = "failed"
+        job_status.completed_at = datetime.now()
+        
+        error_response = TextRecognitionErrorResponse(
+            error_code="INVALID_IMAGE",
+            error_message="이미지 파일이 유효하지 않습니다.",
+            details=f"이미지 검증 실패: {str(img_error)}"
+        )
+        job_status.error = error_response
+        
+        # 검증 실패 콜백 전송
+        callback_data = AsyncTextRecognitionCallbackData(
+            job_id=job_id,
+            status="failed",
+            error=error_response,
+            processing_time_ms=processing_time_ms,
+            metadata=job_status.original_metadata
+        )
+        
+        await _send_callback_with_retry(
+            job_id, job_status.callback_url, callback_data
+        )
+        
+        logger.warning(
+            "이미지 검증 실패",
+            job_id=str(job_id),
+            filename=filename,
+            error=str(img_error)
+        )
+        return
+    
+    # 2단계: 글자인식 처리 (기존 로직 재사용)
+    from app.services.cache import get_cache_service
+    from app.services.circuit_breaker import get_circuit_breaker
+    from app.services.monitoring import get_metrics_collector
+    from app.config.settings import get_settings
+    
+    settings = get_settings()
+    cache_service = get_cache_service(
+        redis_enabled=settings.redis_enabled, 
+        redis_url=settings.redis_url
+    )
+    metrics_collector = get_metrics_collector()
+    gemini_circuit_breaker = get_circuit_breaker(
+        name="gemini_vision_api",
+        failure_threshold=3,
+        failure_rate_threshold=0.3,
+        recovery_timeout=120,
+    )
+    
+    # 이미지 해시 계산
+    image_hash = cache_service.compute_image_hash(
+        image_data, use_content_hash=use_content_hash
+    )
+    
+    # 기존 처리 로직 재사용
+    result = await _process_single_item_with_fallback(
+        image_data,
+        image_hash,
+        filename,
+        use_cache,
+        cache_service,
+        gemini_circuit_breaker,
+        metrics_collector,
+        settings,
+    )
+    
+    # 3단계: 성공 처리 및 콜백 전송
+    processing_time_ms = int((time.time() - start_time) * 1000)
+    job_status.status = "completed"
+    job_status.completed_at = datetime.now()
+    job_status.result = result
+    
+    # 콜백 데이터 준비
+    callback_data = AsyncTextRecognitionCallbackData(
+        job_id=job_id,
+        status="completed",
+        result=result,
+        processing_time_ms=processing_time_ms,
+        metadata=job_status.original_metadata
+    )
+    
+    # 콜백 전송
+    success = await _send_callback_with_retry(
+        job_id, job_status.callback_url, callback_data
+    )
+    
+    logger.info(
+        "비동기 글자인식 처리 완료",
+        job_id=str(job_id),
+        filename=filename,
+        processing_time_ms=processing_time_ms,
+        callback_sent=success
+    )
+
+
+def _cleanup_completed_jobs(max_age_hours: int = 24) -> None:
+    """
+    완료된 작업 정리 (메모리 관리)
+    
+    Args:
+        max_age_hours: 보관 최대 시간 (시간)
+    """
+    cutoff_time = datetime.now() - timedelta(hours=max_age_hours)
+    jobs_to_remove = []
+    
+    for job_id, job_status in _async_job_storage.items():
+        if (job_status.status in ["completed", "failed"] and 
+            job_status.completed_at and 
+            job_status.completed_at < cutoff_time):
+            jobs_to_remove.append(job_id)
+    
+    for job_id in jobs_to_remove:
+        del _async_job_storage[job_id]
+        logger.debug("완료된 작업 정리", job_id=str(job_id))
 
 
 async def _process_single_item_with_fallback(
@@ -612,7 +1069,7 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
 
             # 3. 이미지 검증
             try:
-                image_format, width, height = validate_image_file(image_data)
+                _, _, _ = validate_image_file(image_data)
             except ImageValidationError as e:
                 logger.warning(
                     "이미지 검증 실패",
@@ -1068,6 +1525,584 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
                 },
             )
 
+    @router.post(
+        "/async/submit",
+        response_model=AsyncTextRecognitionSubmitResponse,
+        summary="비동기 글자인식 처리 제출",
+        description="""
+        Spring Boot 시스템에서 호출하는 비동기 글자인식 처리 엔드포인트
+        
+        주요 기능:
+        - 파일 업로드 + callback_url 수신
+        - 고유한 job_id 즉시 반환
+        - BackgroundTasks로 실제 글자인식 처리 시작
+        - 완료 시 callback_url로 결과 전송
+        
+        처리 흐름:
+        1. 파일 및 콜백 URL 검증
+        2. job_id 생성 및 작업 상태 등록
+        3. 즉시 job_id 반환 (HTTP 202)
+        4. BackgroundTasks로 비동기 처리 시작
+        5. 처리 완료 시 콜백 URL로 결과 전송
+        """,
+        status_code=202,
+        dependencies=dependencies,
+    )
+    async def submit_async_text_recognition(
+        background_tasks: BackgroundTasks,
+        file: UploadFile = File(...),
+        callback_url: str = Form(..., pattern=r"^https?://.+"),
+        priority: int = Form(1, ge=1, le=10),
+        use_cache: bool = Form(True),
+        use_content_hash: bool = Form(False),
+    ) -> AsyncTextRecognitionSubmitResponse:
+        """
+        비동기 글자인식 처리 요청 제출
+    
+    이미지 검증은 백그라운드에서 수행되며,
+    제출 시점에는 기본적인 파일 형식만 확인
+    
+    Args:
+        file: 업로드된 이미지 파일
+        callback_url: 처리 완료 시 결과를 받을 콜백 URL
+        priority: 우선순위 (1-10, 높을수록 우선)
+        use_cache: 캐시 사용 여부
+        use_content_hash: 내용 기반 해시 사용 여부
+        
+    Returns:
+        AsyncTextRecognitionSubmitResponse: 작업 ID와 예상 완료 시간
+        """
+        job_id = uuid4()
+        estimated_seconds = 30  # 기본 예상 시간
+        
+        logger.info(
+            "비동기 글자인식 처리 제출",
+            job_id=str(job_id),
+            filename=file.filename,
+            callback_url=callback_url,
+            priority=priority,
+            use_cache=use_cache
+        )
+        
+        try:
+            # 파일 읽기 (검증은 백그라운드에서)
+            image_data = await file.read()
+            
+            # 파일 크기 확인 (최소한의 검증)
+            if len(image_data) == 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="빈 파일입니다."
+                )
+            
+            if len(image_data) > 50 * 1024 * 1024:  # 50MB 제한
+                raise HTTPException(
+                    status_code=400,
+                    detail="파일 크기가 너무 큽니다. (최대 50MB)"
+                )
+            
+            # 작업 상태 초기화
+            job_status = AsyncJobStatus(
+                job_id=job_id,
+                status="submitted",
+                callback_url=callback_url,
+                priority=priority,
+                submitted_at=datetime.now(),
+                original_metadata={
+                    "filename": file.filename or "unknown",
+                    "use_cache": str(use_cache),
+                    "use_content_hash": str(use_content_hash)
+                }
+            )
+            _async_job_storage[job_id] = job_status
+            
+            # 백그라운드 작업 시작 (이미지 검증 포함)
+            background_tasks.add_task(
+                _process_async_text_recognition,
+                job_id=job_id,
+                image_data=image_data,
+                filename=file.filename or "unknown",
+                use_cache=use_cache,
+                use_content_hash=use_content_hash,
+            )
+            
+            # 예상 완료 시간 계산
+            estimated_completion = datetime.now() + timedelta(seconds=estimated_seconds)
+            
+            return AsyncTextRecognitionSubmitResponse(
+                job_id=job_id,
+                status="submitted",
+                estimated_completion_time=estimated_completion,
+                callback_url=callback_url
+            )
+            
+        except HTTPException:
+            # HTTP 예외는 그대로 재발생
+            raise
+        except Exception as e:
+            logger.error(
+                "비동기 작업 제출 중 예상치 못한 오류",
+                job_id=str(job_id),
+                filename=file.filename,
+                error=str(e)
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="비동기 작업 제출 중 오류가 발생했습니다."
+            )
+
+    @router.get(
+        "/async/status/{job_id}",
+        summary="비동기 작업 상태 조회",
+        description="""
+        비동기 글자인식 작업의 현재 상태를 조회합니다.
+        
+        상태 종류:
+        - submitted: 제출됨 (처리 대기 중)
+        - processing: 처리 중
+        - completed: 완료됨
+        - failed: 실패함
+        """
+    )
+    async def get_async_job_status(job_id: UUID) -> dict[str, Any]:
+        """
+        비동기 작업 상태 조회
+        
+        Args:
+            job_id: 조회할 작업 ID
+            
+        Returns:
+            dict: 작업 상태 정보
+        """
+        job_status = _async_job_storage.get(job_id)
+        
+        if not job_status:
+            raise HTTPException(
+                status_code=404,
+                detail=f"작업을 찾을 수 없습니다: {job_id}"
+            )
+        
+        # 처리 시간 계산
+        processing_time_ms = None
+        if job_status.started_at:
+            end_time = job_status.completed_at or datetime.now()
+            processing_time_ms = int((end_time - job_status.started_at).total_seconds() * 1000)
+        
+        response_data = {
+            "job_id": str(job_status.job_id),
+            "status": job_status.status,
+            "callback_url": job_status.callback_url,
+            "priority": job_status.priority,
+            "submitted_at": job_status.submitted_at.isoformat(),
+            "started_at": job_status.started_at.isoformat() if job_status.started_at else None,
+            "completed_at": job_status.completed_at.isoformat() if job_status.completed_at else None,
+            "processing_time_ms": processing_time_ms,
+            "retry_count": job_status.retry_count,
+        }
+        
+        # 결과 포함 (완료된 경우)
+        if job_status.status == "completed" and job_status.result:
+            response_data["result"] = job_status.result.model_dump(mode='json')
+            
+        # 오류 정보 포함 (실패한 경우)
+        if job_status.status == "failed" and job_status.error:
+            response_data["error"] = job_status.error.model_dump(mode='json')
+            
+        return response_data
+
+    @router.get(
+        "/async/ai-server-status/{job_id}",
+        summary="AI 서버 직접 상태 조회",
+        description="""
+        AI 서버에서 job 상태를 직접 조회하는 API
+        
+        콜백이 오지 않을 때 Spring Boot에서 능동적으로 상태 확인 가능
+        - 내부 저장소 + AI 서버 직접 조회 병행
+        - 실시간 처리 상태 확인
+        - 디버깅 정보 포함
+        """,
+        dependencies=dependencies,
+    )
+    async def get_ai_server_job_status(job_id: UUID) -> JSONResponse:
+        """
+        AI 서버에서 job 상태를 직접 조회
+        
+        Spring Boot 클라이언트가 콜백을 기다리지 않고
+        능동적으로 AI 서버 상태를 확인할 수 있는 API
+        
+        Args:
+            job_id: 작업 ID
+            
+        Returns:
+            dict: AI 서버 상태 + 내부 상태 통합 정보
+        """
+        try:
+            # 내부 저장소 상태 확인
+            job_status = _async_job_storage.get(job_id)
+            
+            response_data = {
+                "job_id": str(job_id),
+                "timestamp": datetime.now().isoformat(),
+                "internal_status": None,
+                "ai_server_status": None,
+                "debug_info": {}
+            }
+            
+            if job_status:
+                response_data["internal_status"] = {
+                    "status": job_status.status,
+                    "submitted_at": job_status.submitted_at.isoformat() if job_status.submitted_at else None,
+                    "started_at": job_status.started_at.isoformat() if job_status.started_at else None,
+                    "completed_at": job_status.completed_at.isoformat() if job_status.completed_at else None,
+                    "callback_url": job_status.callback_url,
+                    "error": job_status.error.model_dump(mode='json') if job_status.error else None,
+                    "result": job_status.result.model_dump(mode='json') if job_status.result else None
+                }
+                
+                # 처리 시간 계산
+                if job_status.started_at:
+                    end_time = job_status.completed_at or datetime.now()
+                    elapsed_seconds = (end_time - job_status.started_at).total_seconds()
+                    response_data["debug_info"]["elapsed_seconds"] = elapsed_seconds
+                    response_data["debug_info"]["is_timeout"] = elapsed_seconds > 300
+            
+            # AI 서버 상태 정보 구성 (현재 서버가 AI 서버이므로 내부 상태 활용)
+            if job_status:
+                # 작업이 존재하는 경우 - 내부 상태 정보를 AI 서버 상태로 변환
+                ai_server_info: dict[str, Any] = {
+                    "status": job_status.status,
+                    "job_id": str(job_status.job_id),
+                    "message": f"작업 상태: {job_status.status}"
+                }
+                
+                # 상태별 추가 정보
+                if job_status.status == "completed" and job_status.result:
+                    ai_server_info["result_summary"] = {
+                        "success": len(job_status.result.answers) > 0,  # answers가 있으면 성공으로 간주
+                        "total_items": len(job_status.result.answers)   # answers 리스트 길이가 처리된 아이템 수
+                    }
+                elif job_status.status == "failed" and job_status.error:
+                    ai_server_info["error_info"] = {
+                        "error_code": job_status.error.error_code,
+                        "error_message": job_status.error.error_message,
+                        "details": job_status.error.details
+                    }
+                elif job_status.status == "processing":
+                    if job_status.started_at:
+                        processing_duration = (datetime.now() - job_status.started_at).total_seconds()
+                        ai_server_info["processing_duration_seconds"] = processing_duration
+                
+                response_data["ai_server_status"] = ai_server_info
+            else:
+                # 작업이 존재하지 않는 경우
+                response_data["ai_server_status"] = {
+                    "status": "not_found",
+                    "message": f"Job ID {job_id}를 찾을 수 없습니다",
+                    "possible_reasons": [
+                        "잘못된 Job ID",
+                        "작업이 완료되어 정리됨 (24시간 후 자동 삭제)",
+                        "서버 재시작으로 인한 메모리 초기화"
+                    ]
+                }
+            
+            # 종합 상태 판정
+            if not job_status:
+                response_data["overall_status"] = "not_found"
+                response_data["recommendation"] = "Job ID가 존재하지 않거나 만료되었습니다."
+                return JSONResponse(status_code=404, content=response_data)
+            elif job_status.status == "failed":
+                response_data["overall_status"] = "failed"
+                response_data["recommendation"] = "작업이 실패했습니다. 오류 정보를 확인하세요."
+            elif job_status.status == "completed":
+                response_data["overall_status"] = "completed"
+                response_data["recommendation"] = "작업이 완료되었습니다."
+            elif (job_status.started_at and 
+                  (datetime.now() - job_status.started_at).total_seconds() > 300):
+                response_data["overall_status"] = "timeout_suspected"
+                response_data["recommendation"] = "타임아웃이 의심됩니다. 폴링 메커니즘이 곧 처리할 예정입니다."
+            else:
+                response_data["overall_status"] = "processing"
+                response_data["recommendation"] = "작업이 처리 중입니다."
+            
+            return JSONResponse(content=response_data)
+            
+        except Exception as e:
+            logger.error(
+                "AI 서버 상태 조회 실패",
+                job_id=str(job_id),
+                error=str(e)
+            )
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "job_id": str(job_id),
+                    "overall_status": "error",
+                    "error": f"상태 조회 중 오류 발생: {str(e)}"
+                }
+            )
+
+    @router.get(
+        "/async/result/{job_id}",
+        summary="비동기 작업 결과 조회",
+        description="""
+        완료된 비동기 글자인식 작업의 결과를 조회합니다.
+        
+        주의사항:
+        - 작업이 완료된 경우에만 결과 반환
+        - 처리 중이거나 실패한 경우 적절한 오류 반환
+        """
+    )
+    async def get_async_job_result(job_id: UUID) -> JSONResponse:
+        """
+        비동기 작업 결과 조회
+        
+        Args:
+            job_id: 조회할 작업 ID
+            
+        Returns:
+            JSONResponse: 작업 결과 또는 오류 메시지
+        """
+        job_status = _async_job_storage.get(job_id)
+        
+        if not job_status:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "Job not found",
+                    "job_id": str(job_id),
+                    "message": f"작업을 찾을 수 없습니다: {job_id}"
+                }
+            )
+        
+        # 상태별 응답
+        if job_status.status == "completed" and job_status.result:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "job_id": str(job_id),
+                    "status": "completed",
+                    "result": job_status.result.model_dump(mode='json'),
+                    "completed_at": job_status.completed_at.isoformat() if job_status.completed_at else None
+                }
+            )
+        elif job_status.status == "processing":
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "job_id": str(job_id),
+                    "status": "processing",
+                    "message": "작업이 아직 처리 중입니다",
+                    "started_at": job_status.started_at.isoformat() if job_status.started_at else None
+                }
+            )
+        elif job_status.status == "failed":
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "job_id": str(job_id),
+                    "status": "failed",
+                    "error": job_status.error.model_dump(mode='json') if job_status.error else None,
+                    "message": "작업 처리 중 오류가 발생했습니다"
+                }
+            )
+        else:
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "job_id": str(job_id),
+                    "status": job_status.status,
+                    "message": f"작업 상태: {job_status.status}"
+                }
+            )
+
+    @router.get(
+        "/async/queue",
+        summary="비동기 작업 큐 상태 조회",
+        description="""
+        현재 비동기 작업 큐의 상태를 조회합니다.
+        
+        제공 정보:
+        - 전체 작업 수
+        - 상태별 작업 수
+        - 최근 작업 목록
+        """
+    )
+    async def get_async_queue_status() -> JSONResponse:
+        """
+        비동기 작업 큐 상태 조회
+        
+        Returns:
+            JSONResponse: 큐 상태 정보
+        """
+        # 상태별 작업 수 계산
+        status_counts = {
+            "submitted": 0,
+            "processing": 0,
+            "completed": 0,
+            "failed": 0
+        }
+        
+        recent_jobs = []
+        current_time = datetime.now()
+        
+        for job_id, job_status in _async_job_storage.items():
+            status_counts[job_status.status] = status_counts.get(job_status.status, 0) + 1
+            
+            # 최근 10개 작업 정보
+            if len(recent_jobs) < 10:
+                job_info = {
+                    "job_id": str(job_id),
+                    "status": job_status.status,
+                    "priority": job_status.priority,
+                    "submitted_at": job_status.submitted_at.isoformat() if job_status.submitted_at else None
+                }
+                
+                # 경과 시간 계산
+                if job_status.submitted_at:
+                    elapsed = (current_time - job_status.submitted_at).total_seconds()
+                    job_info["elapsed_seconds"] = round(elapsed, 2)
+                
+                recent_jobs.append(job_info)
+        
+        # 큐 통계 계산
+        total_jobs = len(_async_job_storage)
+        active_jobs = status_counts["submitted"] + status_counts["processing"]
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "queue_status": {
+                    "total_jobs": total_jobs,
+                    "active_jobs": active_jobs,
+                    "status_counts": status_counts
+                },
+                "recent_jobs": recent_jobs,
+                "timestamp": current_time.isoformat(),
+                "queue_info": {
+                    "max_capacity": 1000,  # 예시 값
+                    "current_load": round((active_jobs / 1000) * 100, 2) if active_jobs > 0 else 0,
+                    "is_healthy": active_jobs < 100  # 100개 미만이면 건강한 상태로 간주
+                }
+            }
+        )
+
+    @router.post(
+        "/async/callback/{job_id}",
+        summary="비동기 작업 콜백 수신",
+        description="""
+        Spring Boot에서 전송하는 콜백 수신 엔드포인트 (선택적)
+        
+        주로 콜백 전송 확인 및 로깅 목적으로 사용
+        실제 처리 결과는 콜백 전송 시 이미 포함되어 전송됨
+        """
+    )
+    async def receive_async_callback(
+        job_id: UUID,
+        callback_data: dict[str, Any]
+    ) -> dict[str, str]:
+        """
+        비동기 작업 콜백 수신
+        
+        Args:
+            job_id: 작업 ID
+            callback_data: Spring Boot에서 전송한 콜백 데이터
+            
+        Returns:
+            dict: 수신 확인 응답
+        """
+        logger.info(
+            "비동기 작업 콜백 수신",
+            job_id=str(job_id),
+            callback_data=callback_data
+        )
+        
+        # 작업 상태 업데이트 (선택적)
+        job_status = _async_job_storage.get(job_id)
+        if job_status:
+            job_status.last_callback_attempt = datetime.now()
+            logger.info(
+                "콜백 수신 확인",
+                job_id=str(job_id),
+                current_status=job_status.status
+            )
+        else:
+            logger.warning(
+                "알 수 없는 작업 ID 콜백 수신",
+                job_id=str(job_id)
+            )
+        
+        return {
+            "status": "received",
+            "job_id": str(job_id),
+            "message": "콜백이 성공적으로 수신되었습니다."
+        }
+
+    @router.get(
+        "/async/jobs",
+        summary="진행 중인 비동기 작업 목록",
+        description="현재 진행 중인 모든 비동기 글자인식 작업의 상태를 조회합니다."
+    )
+    async def list_async_jobs(
+        status_filter: str | None = None,
+        limit: int = 50
+    ) -> dict[str, Any]:
+        """
+        진행 중인 비동기 작업 목록 조회
+        
+        Args:
+            status_filter: 상태 필터 (submitted, processing, completed, failed)
+            limit: 최대 조회 개수
+            
+        Returns:
+            dict: 작업 목록 및 요약 정보
+        """
+        jobs = list(_async_job_storage.values())
+        
+        # 상태 필터 적용
+        if status_filter:
+            jobs = [job for job in jobs if job.status == status_filter]
+        
+        # 최신 순으로 정렬 및 제한
+        jobs.sort(key=lambda x: x.submitted_at, reverse=True)
+        jobs = jobs[:limit]
+        
+        # 통계 계산
+        all_jobs = list(_async_job_storage.values())
+        stats = {
+            "total_jobs": len(all_jobs),
+            "submitted": len([j for j in all_jobs if j.status == "submitted"]),
+            "processing": len([j for j in all_jobs if j.status == "processing"]),
+            "completed": len([j for j in all_jobs if j.status == "completed"]),
+            "failed": len([j for j in all_jobs if j.status == "failed"]),
+        }
+        
+        # 응답 데이터 구성
+        job_list = []
+        for job in jobs:
+            processing_time_ms = None
+            if job.started_at:
+                end_time = job.completed_at or datetime.now()
+                processing_time_ms = int((end_time - job.started_at).total_seconds() * 1000)
+            
+            job_list.append({
+                "job_id": str(job.job_id),
+                "status": job.status,
+                "callback_url": job.callback_url,
+                "priority": job.priority,
+                "submitted_at": job.submitted_at.isoformat(),
+                "started_at": job.started_at.isoformat() if job.started_at else None,
+                "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+                "processing_time_ms": processing_time_ms,
+                "retry_count": job.retry_count,
+            })
+        
+        return {
+            "jobs": job_list,
+            "stats": stats,
+            "filter_applied": status_filter,
+            "returned_count": len(job_list),
+        }
+
     return router
 
 
@@ -1090,6 +2125,10 @@ def setup_text_recognition_routes(app, settings: Settings | None = None) -> None
         endpoints=[
             "/text-recognition/answer-sheet",
             "/text-recognition/batch",
+            "/text-recognition/async/submit",
+            "/text-recognition/async/status/{job_id}",
+            "/text-recognition/async/result/{job_id}",
+            "/text-recognition/async/queue",
             "/text-recognition/metrics",
             "/text-recognition/dashboard",
             "/text-recognition/health",
@@ -1102,3 +2141,6 @@ def setup_text_recognition_routes(app, settings: Settings | None = None) -> None
             "monitoring",
         ],
     )
+
+    # 폴링 백그라운드 작업은 앱 startup 이벤트에서 시작됨
+    # setup_text_recognition_routes 함수에서 처리

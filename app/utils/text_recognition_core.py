@@ -16,7 +16,7 @@ import json
 from fastapi import HTTPException
 import structlog
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_vertexai import ChatVertexAI
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, ValidationError
 
@@ -50,159 +50,11 @@ def create_text_recognition_prompt() -> str:
     Returns:
         str: 혼합 콘텐츠 부분 LaTeX 변환 지원 글자인식 프롬프트
     """
-    return """
-You are an expert Korean exam answer sheet recognition specialist with advanced LaTeX mathematical formatting support, including mixed content partial conversion.
-
-CRITICAL INSTRUCTIONS:
-1. This is a Korean exam answer sheet with NUMBERED questions (not Korean labels)
-2. Look for various numbering patterns: 1., 2), (1), 1번, ①, etc.
-3. Support MIXED QUESTION TYPES including mixed content with partial LaTeX conversion:
-   - Multiple Choice: A, B, C, D, E (or 가, 나, 다, 라, 마)
-   - Subjective: Mathematical expressions, text answers, numerical values
-   - Mixed Content: Text containing mathematical expressions (NEW!)
-
-4. MATHEMATICAL SYMBOLS AND LATEX CONVERSION:
-   For mathematical expressions, provide BOTH formats:
-   - extracted_text: Simple notation (√2/√3, x²+2x+1)
-   - latex_formula: LaTeX notation (\\frac{\\sqrt{2}}{\\sqrt{3}}, x^2+2x+1)
-
-5. LATEX MATHEMATICAL NOTATION RULES:
-   - Fractions: \\frac{numerator}{denominator}
-     Example: "2/3" → "\\frac{2}{3}", "√2/√3" → "\\frac{\\sqrt{2}}{\\sqrt{3}}"
-   - Square roots: \\sqrt{expression}
-     Example: "√2" → "\\sqrt{2}", "√(x+1)" → "\\sqrt{x+1}"
-   - Nth roots: \\sqrt[n]{expression}
-     Example: "∛8" → "\\sqrt[3]{8}", "⁴√16" → "\\sqrt[4]{16}"
-   - Superscripts: ^{exponent}
-     Example: "x²" → "x^2", "a³" → "a^3", "2ˣ" → "2^x"
-   - Subscripts: _{subscript}
-     Example: "H₂O" → "H_2O", "x₁" → "x_1"
-   - Greek letters: \\alpha, \\beta, \\gamma, \\pi, \\theta, \\sigma, \\omega
-   - Trigonometric: \\sin, \\cos, \\tan, \\cot, \\sec, \\csc
-   - Logarithmic: \\log, \\ln, \\log_{base}
-   - Special symbols: \\infty, \\pm, \\mp, \\neq, \\leq, \\geq, \\approx
-   - Degree symbol: ^\\circ
-     Example: "sin(30°)" → "\\sin(30^\\circ)"
-
-6. QUESTION DETECTION PATTERNS:
-   - "1.", "2.", "3." (period after number)
-   - "1)", "2)", "3)" (parenthesis after number)  
-   - "(1)", "(2)", "(3)" (number in parentheses)
-   - "1번", "2번", "3번" (Korean numbering)
-   - "①", "②", "③" (circled numbers)
-   - "문제 1", "문제 2" (Korean question labels)
-
-7. ENHANCED ANSWER TYPE RECOGNITION:
-   - Multiple Choice: Single letters (A, B, C, D, E) or (가, 나, 다, 라, 마)
-     → Only provide extracted_text, latex_formula should be null
-   - Pure Numbers: Simple numerical values (19.38, 5, -3)
-     → Only provide extracted_text, latex_formula should be null
-   - Pure Mathematical: Only mathematical expressions
-     → Provide both extracted_text (simple) and latex_formula (LaTeX)
-   - Mixed Content: Text containing mathematical expressions (IMPORTANT!)
-     → Provide both extracted_text (original) and latex_formula (partial LaTeX conversion)
-   - Pure Text: Korean/English text only
-     → Only provide extracted_text, latex_formula should be null
-
-8. MIXED CONTENT PROCESSING RULES (CRITICAL FOR PARTIAL LATEX CONVERSION):
-   For answers containing both text and mathematical expressions:
-   - Preserve all non-mathematical text exactly as written (Korean, English, punctuation)
-   - Convert only mathematical parts to LaTeX notation within the text
-   - Maintain original text structure, spacing, and word order
-   - Apply LaTeX conversion selectively to mathematical symbols embedded in text
-   
-   Mathematical parts within text include:
-   - Fractions: 2/3 → \\frac{2}{3}
-   - Roots: √2 → \\sqrt{2}
-   - Powers: x² → x^2
-   - Trigonometry: sin(30°) → \\sin(30^\\circ)
-   - Greek letters: π → \\pi
-   - Chemical formulas: H₂O → H_2O
-
-9. CONTENT TYPE DETECTION:
-   Mixed content identification criteria:
-   - Contains Korean/English text (>=1 word) AND mathematical expressions
-   - Text indicators: "답:", "결과는", "공식:", "Answer:", "Result:", "Formula:"
-   - Mathematical symbols within text context
-   - Combined text-math expressions
-   
-   Processing priorities:
-   1. Detect mixed content first
-   2. Identify mathematical components within text
-   3. Apply selective LaTeX conversion to math parts only
-   4. Preserve text structure completely
-   5. Generate latex_formula with partial conversions
-
-Extract all answers from numbered questions. Support 1-20 questions flexibly.
-
-Return results in this EXACT JSON format:
-{
-    "answers": [
-        {
-            "question_number": 1,
-            "question_label": "1",
-            "extracted_text": "A",
-            "latex_formula": null,
-            "confidence": 0.95
-        },
-        {
-            "question_number": 2,
-            "question_label": "2", 
-            "extracted_text": "답: √2/√3",
-            "latex_formula": "답: \\frac{\\sqrt{2}}{\\sqrt{3}}",
-            "confidence": 0.90
-        },
-        {
-            "question_number": 3,
-            "question_label": "3",
-            "extracted_text": "x²+2x+1",
-            "latex_formula": "x^2+2x+1",
-            "confidence": 0.88
-        }
-    ]
-}
-
-EXAMPLE CONVERSIONS:
-
-Pure Mathematical → LaTeX:
-- "2/3" → "\\frac{2}{3}"
-- "√2" → "\\sqrt{2}"
-- "∛8" → "\\sqrt[3]{8}"
-- "x²+y²" → "x^2+y^2"
-- "sin(30°)" → "\\sin(30^\\circ)"
-
-Mixed Content → Partial LaTeX (CRITICAL EXAMPLES):
-Korean + Math:
-- "답: 2/3" → extracted_text: "답: 2/3", latex_formula: "답: \\frac{2}{3}"
-- "결과는 √2입니다" → extracted_text: "결과는 √2입니다", latex_formula: "결과는 \\sqrt{2}입니다"
-- "각도 sin(30°) = 0.5" → extracted_text: "각도 sin(30°) = 0.5", latex_formula: "각도 \\sin(30^\\circ) = 0.5"
-- "공식: E=mc²" → extracted_text: "공식: E=mc²", latex_formula: "공식: E=mc^2"
-
-English + Math:
-- "Answer: x²+1" → extracted_text: "Answer: x²+1", latex_formula: "Answer: x^2+1"
-- "Height = 2πr" → extracted_text: "Height = 2πr", latex_formula: "Height = 2\\pi r"
-- "Formula: a/b + c" → extracted_text: "Formula: a/b + c", latex_formula: "Formula: \\frac{a}{b} + c"
-
-Complex Mixed:
-- "공식은 E=mc²이고 c는 3×10⁸" → extracted_text: "공식은 E=mc²이고 c는 3×10⁸", latex_formula: "공식은 E=mc^2이고 c는 3\\times 10^8"
-- "답: (x+1)/(x-1) = 2" → extracted_text: "답: (x+1)/(x-1) = 2", latex_formula: "답: \\frac{x+1}{x-1} = 2"
-
-NON-MATHEMATICAL ANSWERS (latex_formula = null):
-- Multiple Choice: "A", "B", "C", "D", "E", "가", "나", "다"
-- Pure Numbers: "19.38", "5", "-3", "0"
-- Pure Text: "정답", "해당없음", "증명생략", "No answer"
-
-IMPORTANT: 
-- question_label should be simple numbers: "1", "2", "3", etc.
-- For mixed content, ALWAYS provide partial LaTeX conversion in latex_formula
-- Preserve Korean/English text structure completely in mixed content
-- Convert only mathematical symbols/expressions to LaTeX within text
-- For pure mathematical expressions, convert entire content to LaTeX
-- For pure text or multiple choice, set latex_formula to null
-"""
+    from app.prompts.text_recognition_prompts import get_detailed_prompt
+    return get_detailed_prompt()
 
 
-def create_gemini_vision_model(api_key: str) -> ChatGoogleGenerativeAI:
+def create_gemini_vision_model(api_key: str | None = None) -> ChatVertexAI:
     """
     Gemini Vision 모델 생성
 
@@ -210,7 +62,7 @@ def create_gemini_vision_model(api_key: str) -> ChatGoogleGenerativeAI:
         api_key: Gemini API 키
 
     Returns:
-        ChatGoogleGenerativeAI: 구성된 Gemini Vision 모델
+        ChatVertexAI: 구성된 Vertex AI Gemini Vision 모델
 
     Raises:
         HTTPException: API 키가 설정되지 않은 경우
@@ -218,16 +70,19 @@ def create_gemini_vision_model(api_key: str) -> ChatGoogleGenerativeAI:
     if not api_key:
         raise HTTPException(status_code=503, detail="Gemini API key not configured")
 
-    return ChatGoogleGenerativeAI(
-        model="gemini-2.5-pro",  # Vision 지원 모델
-        google_api_key=api_key,
+    from app.config.settings import get_settings
+    settings = get_settings()
+    return ChatVertexAI(
+        model=settings.gemini_model,  # Vision 지원 모델
+        project=settings.gcp_project_id,
+        location=settings.gcp_location,
         temperature=0.0,  # 최대 정확성 (수학 기호 인식)
         max_output_tokens=8000,
     )
 
 
 async def process_text_recognition_with_gemini(
-    image_data: bytes, model: ChatGoogleGenerativeAI
+    image_data: bytes, model: ChatVertexAI
 ) -> TextRecognitionParsingResponse:
     """
     Gemini Vision API를 통한 글자인식 처리
@@ -388,7 +243,14 @@ def get_text_recognition_quality_metrics(answers: list[TextRecognitionAnswer]) -
     high_confidence = len([a for a in answers if a.confidence >= 0.8])
     medium_confidence = len([a for a in answers if 0.5 <= a.confidence < 0.8])
     low_confidence = len([a for a in answers if a.confidence < 0.5])
-    empty_answers = len([a for a in answers if not a.extracted_text.strip()])
+    # v2.1.0 구조 대응: final_answer 또는 extracted_text 확인
+    empty_answers = len([
+        a for a in answers 
+        if not (
+            (a.final_answer and a.final_answer.extracted_text and a.final_answer.extracted_text.strip()) or
+            (a.extracted_text and a.extracted_text.strip())
+        )
+    ])
 
     return {
         "total_answers": len(answers),

@@ -18,7 +18,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 import structlog
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_vertexai import ChatVertexAI
 from app.models.text_recognition import (
     TextRecognitionAnswerResponse,
     TextRecognitionAnswer,
@@ -125,14 +125,17 @@ class BatchTextRecognitionService:
         self._progress_tracker: dict[UUID, BatchTextRecognitionProgress] = {}
 
         # Gemini 모델 (재사용)
-        self._gemini_model: ChatGoogleGenerativeAI | None = None
+        self._gemini_model: ChatVertexAI | None = None
 
-    def _get_gemini_model(self) -> ChatGoogleGenerativeAI:
+    def _get_gemini_model(self) -> ChatVertexAI:
         """Gemini 모델 인스턴스 생성/재사용"""
         if self._gemini_model is None:
-            self._gemini_model = ChatGoogleGenerativeAI(
-                model="gemini-2.5-pro",
-                google_api_key=self.gemini_api_key,
+            from app.config.settings import get_settings
+            settings = get_settings()
+            self._gemini_model = ChatVertexAI(
+                model=settings.gemini_model,
+                project=settings.gcp_project_id,
+                location=settings.gcp_location,
                 temperature=0.1,
                 max_output_tokens=8000,
             )
@@ -157,7 +160,7 @@ class BatchTextRecognitionService:
             async with self.rate_limiter:  # Rate limiting
                 try:
                     # 이미지 검증
-                    image_format, width, height = validate_image_file(item.image_data)
+                    _, width, height = validate_image_file(item.image_data)
 
                     # 품질 평가
                     image_quality = assess_image_quality(item.image_data, width, height)
@@ -184,11 +187,20 @@ class BatchTextRecognitionService:
                         model_version="gemini-2.5-pro",
                     )
 
-                    # 응답 생성
+                    # 응답 생성 (JSON 구조 변경에 맞춰 매핑)
                     answers = []
                     for answer_data in ocr_result.get("answers", []):
                         try:
-                            answers.append(TextRecognitionAnswer(**answer_data))
+                            # JSON 구조 통일: question_number 사용
+                            # latex_formula 기본값 None 설정
+                            mapped_data = {
+                                "question_number": answer_data.get("question_number", answer_data.get("id", 1)),
+                                "question_label": answer_data.get("question_label", "1"),
+                                "extracted_text": answer_data.get("extracted_text", ""),
+                                "latex_formula": answer_data.get("latex_formula", None),
+                                "confidence": answer_data.get("confidence", 0.0)
+                            }
+                            answers.append(TextRecognitionAnswer(**mapped_data))
                         except Exception:
                             continue
 
@@ -261,7 +273,7 @@ class BatchTextRecognitionService:
                     )
 
     async def _call_gemini_vision(
-        self, image_data: bytes, model: ChatGoogleGenerativeAI
+        self, image_data: bytes, model: ChatVertexAI
     ) -> dict[str, Any]:
         """
         Gemini Vision API 호출 (기존 로직과 동일)
@@ -280,24 +292,9 @@ class BatchTextRecognitionService:
         # Base64 인코딩
         image_base64 = base64.b64encode(image_data).decode("utf-8")
 
-        # 프롬프트 (기존과 동일)
-        prompt = """
-You are an expert Korean handwriting recognition specialist for exam answer sheets.
-
-Extract all handwritten Korean text from subjective question areas in this image.
-
-Return the results in this exact JSON format:
-{
-    "answers": [
-        {
-            "question_number": 1,
-            "question_label": "주1",
-            "extracted_text": "handwritten Korean text",
-            "confidence": 0.85
-        }
-    ]
-}
-"""
+        # 중앙화된 프롬프트 사용 (배치 처리 최적화)
+        from app.prompts.text_recognition_prompts import get_batch_prompt
+        prompt = get_batch_prompt()
 
         # 메시지 구성
         message = HumanMessage(
