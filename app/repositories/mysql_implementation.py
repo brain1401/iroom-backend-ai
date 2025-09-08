@@ -13,12 +13,12 @@ aiomysql을 사용한 실제 DB 접근 구현체들
 - MySQLGradingRepository: 채점 결과 DB 저장/조회
 """
 
-import aiomysql
+import aiomysql  # type: ignore[reportMissingImports]
 import json
 from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
-import structlog
+import structlog  # type: ignore[reportMissingImports]
 
 from app.models.grading import (
     QuestionData,
@@ -38,6 +38,56 @@ from .interfaces import (
 
 logger = structlog.get_logger("mysql_repository")
 
+
+def _normalize_choices(choices_raw):
+    """DB에서 읽은 choices를 QuestionData가 기대하는 dict 형태로 정규화.
+
+    허용 입력 예:
+    - dict (이미 올바른 형태): {"1": "A", "2": "B"} 또는 {1: "A", 2: "B"}
+    - list[dict]: [{"id": 1, "text": "A"}, ...]
+    - list[str]: ["A", "B", "C", "D"] → 1부터 번호 매김
+    - 기타: None 반환
+    """
+    try:
+        # 이미 dict인 경우 그대로 사용
+        if isinstance(choices_raw, dict):
+            return choices_raw
+
+        # 문자열이면 JSON 디코딩 시도
+        if isinstance(choices_raw, str):
+            try:
+                parsed = json.loads(choices_raw)
+            except Exception:
+                return None
+        else:
+            parsed = choices_raw
+
+        # list[dict] 패턴: {id, text}
+        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+            normalized: dict[int | str, str] = {}
+            for item in parsed:
+                choice_id = item.get("id")
+                text = item.get("text") or item.get("label") or item.get("value")
+                if text is None:
+                    continue
+                # 키는 정수 또는 문자열 모두 허용 (소비 측에서 둘 다 조회 시도)
+                if isinstance(choice_id, int):
+                    normalized[choice_id] = str(text)
+                elif isinstance(choice_id, str) and choice_id.isdigit():
+                    normalized[int(choice_id)] = str(text)
+                else:
+                    # id가 없으면 1부터 순번 재부여
+                    idx = len(normalized) + 1
+                    normalized[idx] = str(text)
+            return normalized or None
+
+        # list[str] 패턴
+        if isinstance(parsed, list) and (not parsed or isinstance(parsed[0], str)):
+            return {i + 1: v for i, v in enumerate(parsed)}
+    except Exception:
+        return None
+
+    return None
 
 class MySQLConnection:
     """
@@ -204,8 +254,8 @@ class MySQLExamRepository(ExamRepositoryInterface):
                 """
                 await cursor.execute(query, (str(submission_id),))
                 rows = await cursor.fetchall()
-                
-                answers = []
+
+                answers: list[StudentAnswerSheetQuestion] = []
                 for row in rows:
                     answer = StudentAnswerSheetQuestion(
                         id=UUID(row['id']),
@@ -216,13 +266,13 @@ class MySQLExamRepository(ExamRepositoryInterface):
                         selected_choice=row['selected_choice']
                     )
                     answers.append(answer)
-                
+
                 logger.info(
                     "학생 답안 조회 완료",
                     submission_id=str(submission_id),
                     answer_count=len(answers)
                 )
-                
+
                 return answers
     
     async def get_exam_sheet_id_by_submission_id(self, submission_id: UUID) -> UUID | None:
@@ -267,7 +317,9 @@ class MySQLExamRepository(ExamRepositoryInterface):
         self, 
         exam_id: UUID, 
         student_id: int,
-        submission_id: UUID | None = None
+        submission_id: UUID | None = None,
+        student_name: str | None = None,
+        student_phone: str | None = None
     ) -> UUID:
         """
         새로운 제출 생성
@@ -287,12 +339,19 @@ class MySQLExamRepository(ExamRepositoryInterface):
         pool = await self.connection.get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor() as cursor:
+                # submitted_at 지정, total_score는 NULL 기본값 사용
                 await cursor.execute(
                     """
-                    INSERT INTO exam_submission (id, exam_id, student_id, created_at, updated_at)
-                    VALUES (%s, %s, %s, NOW(), NOW())
+                    INSERT INTO exam_submission (id, exam_id, student_id, student_name, student_phone, submitted_at)
+                    VALUES (%s, %s, %s, %s, %s, NOW())
                     """,
-                    (uuid_to_binary(submission_id), uuid_to_binary(exam_id), student_id)
+                    (
+                        uuid_to_binary(submission_id),
+                        uuid_to_binary(exam_id),
+                        student_id,
+                        (student_name or f"Student_{student_id}"),
+                        (student_phone or None),
+                    )
                 )
                 await conn.commit()
                 
@@ -305,32 +364,28 @@ class MySQLExamRepository(ExamRepositoryInterface):
         answer_sheet_id: UUID | None = None
     ) -> UUID:
         """
-        학생 답안지 생성
-        
-        Args:
-            submission_id: 제출 ID
-            student_name: 학생 이름
-            answer_sheet_id: 답안지 ID (없으면 자동 생성)
-            
-        Returns:
-            UUID: 생성된 답안지 ID
+        학생 답안지 헤더 생성 (student_answer_sheet)
         """
         from app.utils.uuid_utils import generate_uuidv7, uuid_to_binary
-        
+
         answer_sheet_id = answer_sheet_id or generate_uuidv7()
-        
+
         pool = await self.connection.get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute(
                     """
-                    INSERT INTO student_answer_sheet (id, submission_id, student_name, created_at, updated_at)
-                    VALUES (%s, %s, %s, NOW(), NOW())
+                    INSERT INTO student_answer_sheet (id, submission_id, student_name)
+                    VALUES (%s, %s, %s)
                     """,
-                    (uuid_to_binary(answer_sheet_id), uuid_to_binary(submission_id), student_name)
+                    (
+                        uuid_to_binary(answer_sheet_id),
+                        uuid_to_binary(submission_id),
+                        student_name,
+                    )
                 )
                 await conn.commit()
-                
+
         return answer_sheet_id
     
     async def create_answer_sheet_questions(
@@ -339,50 +394,46 @@ class MySQLExamRepository(ExamRepositoryInterface):
         answers: list[dict]
     ) -> list[UUID]:
         """
-        학생 답안지 문제별 답안 생성
-        
-        Args:
-            answer_sheet_id: 답안지 ID
-            answers: 답안 목록
-            
-        Returns:
-            list[UUID]: 생성된 답안 ID 목록
+        학생 답안(각 문제)을 student_answer_sheet_question에 생성.
         """
         from app.utils.uuid_utils import generate_uuidv7
-        
+
         pool = await self.connection.get_pool()
-        answer_ids = []
-        
+        answer_ids: list[UUID] = []
+
         async with pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 for answer in answers:
                     answer_id = generate_uuidv7()
                     answer_ids.append(answer_id)
-                    
+
                     query = """
                     INSERT INTO student_answer_sheet_question 
                     (id, student_answer_sheet_id, question_id, answer_text, answer_image_url, selected_choice)
                     VALUES (UUID_TO_BIN(%s), UUID_TO_BIN(%s), UUID_TO_BIN(%s), %s, %s, %s)
                     """
-                    
-                    await cursor.execute(query, (
-                        str(answer_id),
-                        str(answer_sheet_id),
-                        str(answer['question_id']),
-                        answer.get('answer_text'),
-                        answer.get('answer_image_url'),
-                        answer.get('selected_choice')
-                    ))
-                
+
+                    await cursor.execute(
+                        query,
+                        (
+                            str(answer_id),
+                            str(answer_sheet_id),
+                            str(answer['question_id']),
+                            answer.get('answer_text'),
+                            answer.get('answer_image_url'),
+                            answer.get('selected_choice'),
+                        ),
+                    )
+
                 await conn.commit()
-                
+
                 logger.info(
                     "학생 답안 생성 완료",
                     answer_sheet_id=str(answer_sheet_id),
                     answer_count=len(answer_ids)
                 )
-                
-                return answer_ids
+
+        return answer_ids
     
     async def get_exam_sheet_id_by_exam_id(self, exam_id: UUID) -> UUID | None:
         """
@@ -475,13 +526,8 @@ class MySQLQuestionRepository(QuestionRepositoryInterface):
                 
                 questions = []
                 for row in rows:
-                    # JSON 파싱 (choices 필드)
-                    choices = None
-                    if row['choices']:
-                        try:
-                            choices = json.loads(row['choices']) if isinstance(row['choices'], str) else row['choices']
-                        except (json.JSONDecodeError, TypeError):
-                            choices = None
+                    # choices 정규화 (list 형태를 dict로 변환)
+                    choices = _normalize_choices(row.get('choices')) if row.get('choices') is not None else None
                     
                     question = QuestionData(
                         question_id=UUID(row['id']),
@@ -541,13 +587,8 @@ class MySQLQuestionRepository(QuestionRepositoryInterface):
                     logger.warning("문제 정보 없음", question_id=str(question_id))
                     return None
                 
-                # JSON 파싱 (choices 필드)
-                choices = None
-                if row['choices']:
-                    try:
-                        choices = json.loads(row['choices']) if isinstance(row['choices'], str) else row['choices']
-                    except (json.JSONDecodeError, TypeError):
-                        choices = None
+                # choices 정규화 (list 형태를 dict로 변환)
+                choices = _normalize_choices(row.get('choices')) if row.get('choices') is not None else None
                 
                 question = QuestionData(
                     question_id=UUID(row['id']),
@@ -606,7 +647,7 @@ class MySQLGradingRepository(GradingRepositoryInterface):
                         INSERT INTO exam_result (
                             id, submission_id, exam_sheet_id,
                             graded_at, total_score, status,
-                            grading_comment, version
+                            scoring_comment, version
                         ) VALUES (
                             UUID_TO_BIN(%s), UUID_TO_BIN(%s), UUID_TO_BIN(%s),
                             %s, %s, %s, %s, %s
@@ -631,7 +672,7 @@ class MySQLGradingRepository(GradingRepositoryInterface):
                             INSERT INTO exam_result_question (
                                 id, exam_result_id, question_id, answer_id,
                                 is_correct, score, max_score,
-                                grading_method, grading_comment, confidence_score,
+                                scoring_method, scoring_comment, confidence_score,
                                 created_at, updated_at
                             ) VALUES (
                                 UUID_TO_BIN(UUID()), UUID_TO_BIN(%s), UUID_TO_BIN(%s), UUID_TO_BIN(%s),
