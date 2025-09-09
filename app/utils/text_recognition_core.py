@@ -85,7 +85,7 @@ async def process_text_recognition_with_gemini(
     image_data: bytes, model: ChatVertexAI
 ) -> TextRecognitionParsingResponse:
     """
-    Gemini Vision API를 통한 글자인식 처리
+    Gemini Vision API를 통한 글자인식 처리 (LangChain Structured Output 적용)
 
     Args:
         image_data: 최적화된 이미지 데이터
@@ -98,6 +98,12 @@ async def process_text_recognition_with_gemini(
         HTTPException: 글자인식 처리 실패 시
     """
     try:
+        # 1단계: LangChain Structured Output 시도
+        logger.info("LangChain Structured Output 방식으로 글자인식 시도")
+        
+        # Structured Output 모델 생성
+        structured_model = model.with_structured_output(TextRecognitionParsingResponse)
+        
         # 이미지 최적화 (MPO 형식 변환, 10MB 초과시 압축)
         original_size_kb = len(image_data) // 1024
         optimized_image_data = optimize_image_for_gemini(image_data)
@@ -116,7 +122,7 @@ async def process_text_recognition_with_gemini(
         # 프롬프트 구성
         prompt = create_text_recognition_prompt()
 
-        # Gemini Vision API 호출
+        # Structured Output으로 Gemini Vision API 호출
         message = HumanMessage(
             content=[
                 {"type": "text", "text": prompt},
@@ -127,109 +133,150 @@ async def process_text_recognition_with_gemini(
             ]
         )
 
-        logger.info("Gemini Vision API 호출 시작", prompt_length=len(prompt))
-        response = await model.ainvoke([message])
-
-        # 응답 텍스트 추출 (LangChain BaseMessage.content 처리)
-        if isinstance(response.content, str):
-            response_text = response.content.strip()
-        elif isinstance(response.content, list):
-            # content가 리스트인 경우 텍스트 요소들만 추출
-            text_parts = []
-            for part in response.content:
-                if isinstance(part, str):
-                    text_parts.append(part)
-                elif isinstance(part, dict) and "text" in part:
-                    text_parts.append(str(part["text"]))
-                else:
-                    # 기타 경우는 문자열로 변환
-                    text_parts.append(str(part))
-            response_text = "".join(text_parts).strip()
-        else:
-            # 기타 타입은 문자열로 변환
-            response_text = str(response.content).strip()
-
-        # Gemini 원본 응답 로깅 (디버깅용)
-        # Gemini 원본 응답 로깅 (디버깅용)
-        logger.info(
-            "Gemini 원본 응답 수신",
-            response_length=len(response_text),
-            response_preview=response_text[:500] if len(response_text) > 500 else response_text,
-            is_empty=len(response_text) == 0
-        )
+        logger.info("LangChain Structured Output API 호출 시작", prompt_length=len(prompt))
         
-        # 빈 응답 처리
-        if not response_text or response_text.strip() == "":
-            logger.error(
-                "Gemini가 빈 응답 반환",
-                prompt_length=len(prompt),
-                image_size_kb=len(optimized_image_data) // 1024,
-                possible_causes=[
-                    "이미지에 텍스트가 없음",
-                    "이미지 형식 호환성 문제 (MPO)",
-                    "Gemini API 일시적 오류",
-                    "Rate limit 또는 quota 초과"
-                ]
-            )
-            # 빈 답안 반환
-            return TextRecognitionParsingResponse(answers=[])
-
-        # JSON 파싱
         try:
-            # 코드 블록 제거 (```json ... ``` 형태)
-            if response_text.startswith("```"):
-                lines = response_text.split("\n")
-                json_lines = []
-                in_json = False
-                for line in lines:
-                    if line.strip().startswith("```"):
-                        in_json = not in_json
-                        continue
-                    if in_json:
-                        json_lines.append(line)
-                response_text = "\n".join(json_lines)
-
-            parsed_data = json.loads(response_text)
+            # Structured Output으로 직접 파싱된 결과 받기
+            raw_result = await structured_model.ainvoke([message])
             
-            # 파싱된 데이터 로깅 (디버깅용)
+            # 타입 안전성을 위해 명시적 변환
+            if isinstance(raw_result, TextRecognitionParsingResponse):
+                ocr_result = raw_result
+            elif isinstance(raw_result, dict):
+                # 딕셔너리 형태로 반환된 경우 Pydantic 모델로 변환
+                ocr_result = TextRecognitionParsingResponse(**raw_result)
+            else:
+                # 예상치 못한 타입인 경우 빈 응답 반환
+                logger.warning(
+                    "예상치 못한 Structured Output 타입",
+                    result_type=type(raw_result).__name__
+                )
+                return TextRecognitionParsingResponse(answers=[])
+            
+            # 결과가 이미 TextRecognitionParsingResponse 객체임
             logger.info(
-                "JSON 파싱 성공",
-                parsed_data=parsed_data,
-                answers_count=len(parsed_data.get("answers", []))
-            )
-
-            # Pydantic 모델로 검증
-            ocr_result = TextRecognitionParsingResponse(**parsed_data)
-
-            logger.info(
-                "글자인식 결과 파싱 완료",
+                "LangChain Structured Output 성공",
+                method="langchain_structured",
                 detected_questions=ocr_result.detected_questions,
                 extracted_answers=len(ocr_result.answers),
-                answers_detail=[
-                    {
-                        "q_num": a.question_number,
-                        "has_text": bool(a.extracted_text) if hasattr(a, 'extracted_text') else False,
-                        "has_solution": bool(a.solution_process) if hasattr(a, 'solution_process') else False,
-                        "has_final": bool(a.final_answer) if hasattr(a, 'final_answer') else False
-                    }
-                    for a in ocr_result.answers
-                ]
+                average_confidence=calculate_average_confidence(ocr_result.answers)
             )
-
+            
             return ocr_result
-
-        except (json.JSONDecodeError, ValidationError) as parse_error:
-            logger.error(
-                "Gemini 응답 파싱 실패",
-                response_full=response_text,  # 전체 응답 로깅
-                error_type=type(parse_error).__name__,
-                error_detail=str(parse_error),
-                response_starts_with=response_text[:100] if response_text else "empty"
+            
+        except Exception as structured_error:
+            logger.warning(
+                "LangChain Structured Output 실패, 기존 방식으로 fallback",
+                structured_error=str(structured_error),
+                fallback_method="manual_parsing"
             )
+            
+            # 2단계: 기존 방식으로 fallback
+            logger.info("기존 JSON 파싱 방식으로 진행")
+            response = await model.ainvoke([message])
+            
+            # 응답 텍스트 추출 (LangChain BaseMessage.content 처리)
+            if isinstance(response.content, str):
+                response_text = response.content.strip()
+            elif isinstance(response.content, list):
+                # content가 리스트인 경우 텍스트 요소들만 추출
+                text_parts = []
+                for part in response.content:
+                    if isinstance(part, str):
+                        text_parts.append(part)
+                    elif isinstance(part, dict) and "text" in part:
+                        text_parts.append(str(part["text"]))
+                    else:
+                        # 기타 경우는 문자열로 변환
+                        text_parts.append(str(part))
+                response_text = "".join(text_parts).strip()
+            else:
+                # 기타 타입은 문자열로 변환
+                response_text = str(response.content).strip()
 
-            # 파싱 실패 시 기본값 반환
-            logger.warning("파싱 실패로 빈 답안 반환")
-            return TextRecognitionParsingResponse(answers=[])
+            # Gemini 원본 응답 로깅 (디버깅용)
+            logger.info(
+                "Gemini 원본 응답 수신 (Fallback)",
+                response_length=len(response_text),
+                response_preview=response_text[:500] if len(response_text) > 500 else response_text,
+                is_empty=len(response_text) == 0,
+                method="manual_parsing_fallback"
+            )
+            
+            # 빈 응답 처리
+            if not response_text or response_text.strip() == "":
+                logger.error(
+                    "Gemini가 빈 응답 반환 (Fallback)",
+                    prompt_length=len(prompt),
+                    image_size_kb=len(optimized_image_data) // 1024,
+                    possible_causes=[
+                        "이미지에 텍스트가 없음",
+                        "이미지 형식 호환성 문제 (MPO)",
+                        "Gemini API 일시적 오류",
+                        "Rate limit 또는 quota 초과"
+                    ]
+                )
+                # 빈 답안 반환
+                return TextRecognitionParsingResponse(answers=[])
+
+            # JSON 파싱 (fallback)
+            try:
+                # 코드 블록 제거 (```json ... ``` 형태)
+                if response_text.startswith("```"):
+                    lines = response_text.split("\n")
+                    json_lines = []
+                    in_json = False
+                    for line in lines:
+                        if line.strip().startswith("```"):
+                            in_json = not in_json
+                            continue
+                        if in_json:
+                            json_lines.append(line)
+                    response_text = "\n".join(json_lines)
+
+                parsed_data = json.loads(response_text)
+                
+                # 파싱된 데이터 로깅 (디버깅용)
+                logger.info(
+                    "JSON 파싱 성공 (Fallback)",
+                    parsed_data=parsed_data,
+                    answers_count=len(parsed_data.get("answers", []))
+                )
+
+                # Pydantic 모델로 검증
+                ocr_result = TextRecognitionParsingResponse(**parsed_data)
+
+                logger.info(
+                    "글자인식 결과 파싱 완료 (Fallback)",
+                    method="manual_parsing_fallback",
+                    detected_questions=ocr_result.detected_questions,
+                    extracted_answers=len(ocr_result.answers),
+                    answers_detail=[
+                        {
+                            "q_num": a.question_number,
+                            "has_text": bool(a.extracted_text) if hasattr(a, 'extracted_text') else False,
+                            "has_solution": bool(a.solution_process) if hasattr(a, 'solution_process') else False,
+                            "has_final": bool(a.final_answer) if hasattr(a, 'final_answer') else False
+                        }
+                        for a in ocr_result.answers
+                    ]
+                )
+
+                return ocr_result
+
+            except (json.JSONDecodeError, ValidationError) as parse_error:
+                logger.error(
+                    "Gemini 응답 파싱 실패 (Fallback)",
+                    response_full=response_text,  # 전체 응답 로깅
+                    error_type=type(parse_error).__name__,
+                    error_detail=str(parse_error),
+                    response_starts_with=response_text[:100] if response_text else "empty",
+                    method="manual_parsing_fallback"
+                )
+
+                # 파싱 실패 시 기본값 반환
+                logger.warning("파싱 실패로 빈 답안 반환 (Fallback)")
+                return TextRecognitionParsingResponse(answers=[])
 
     except Exception as e:
         logger.error("Gemini Vision API 호출 실패", error=str(e))
