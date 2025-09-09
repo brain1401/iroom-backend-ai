@@ -178,18 +178,19 @@ async def submit_and_grade(
         submission_id = generate_uuidv7()
         answer_sheet_id = generate_uuidv7()
         
-        # 4. exam_submission 생성
-        # student_name을 자동 생성 (Student_{id} 형식)
-        student_name = f"Student_{request.student_id}"
+        # 4. exam_submission 생성 (이름/전화번호 필수)
         submission_id = await exam_repo.create_submission(
             exam_id=request.exam_id,
-            student_id=request.student_id
+            student_id=request.student_id,
+            submission_id=submission_id,
+            student_name=request.student_name,
+            student_phone=request.student_phone,
         )
         
         # 5. student_answer_sheet 생성
         answer_sheet_id = await exam_repo.create_answer_sheet(
             submission_id=submission_id,
-            student_name=student_name
+            student_name=request.student_name
         )
         
         # 6. student_answer_sheet_question 생성
