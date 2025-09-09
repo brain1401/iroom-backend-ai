@@ -651,10 +651,10 @@ class MySQLGradingRepository(GradingRepositoryInterface):
         pool = await self.connection.get_pool()
 
         async with pool.acquire() as conn:
-            async with conn.begin():  # 트랜잭션 시작
-                try:
-                    # 1. exam_result 테이블에 전체 결과 저장
-                    async with conn.cursor() as cursor:
+            await conn.begin()  # 트랜잭션 시작
+            try:
+                # 1. exam_result 테이블에 전체 결과 저장
+                async with conn.cursor() as cursor:
                         exam_result_query = """
                         INSERT INTO exam_result (
                             id, submission_id, exam_sheet_id,
@@ -680,59 +680,61 @@ class MySQLGradingRepository(GradingRepositoryInterface):
                             ),
                         )
 
-                    # 2. exam_result_question 테이블에 문제별 결과 저장
-                    if grading_result.question_results:
-                        async with conn.cursor() as cursor:
-                            question_result_query = """
-                            INSERT INTO exam_result_question (
-                                id, exam_result_id, question_id, answer_id,
-                                is_correct, score, max_score,
-                                scoring_method, scoring_comment, confidence_score,
-                                created_at, updated_at
-                            ) VALUES (
-                                UUID_TO_BIN(UUID()), UUID_TO_BIN(%s), UUID_TO_BIN(%s), UUID_TO_BIN(%s),
-                                %s, %s, %s, %s, %s, %s,
-                                %s, %s
+                # 2. exam_result_question 테이블에 문제별 결과 저장
+                if grading_result.question_results:
+                    async with conn.cursor() as cursor:
+                        question_result_query = """
+                        INSERT INTO exam_result_question (
+                            id, exam_result_id, question_id, answer_id,
+                            is_correct, score, max_score,
+                            scoring_method, scoring_comment, confidence_score,
+                            created_at, updated_at
+                        ) VALUES (
+                            UUID_TO_BIN(UUID()), UUID_TO_BIN(%s), UUID_TO_BIN(%s), UUID_TO_BIN(%s),
+                            %s, %s, %s, %s, %s, %s,
+                            %s, %s
+                        )
+                        """
+
+                        for question_result in grading_result.question_results:
+                            await cursor.execute(
+                                question_result_query,
+                                (
+                                    str(grading_result.result_id),
+                                    str(question_result.question_id),
+                                    str(question_result.answer_id),
+                                    question_result.is_correct,
+                                    question_result.score,
+                                    question_result.max_score,
+                                    question_result.grading_method.value,
+                                    question_result.scoring_comment,
+                                    question_result.confidence_score,
+                                    question_result.created_at,
+                                    question_result.created_at,  # updated_at도 동일하게 설정
+                                ),
                             )
-                            """
 
-                            for question_result in grading_result.question_results:
-                                await cursor.execute(
-                                    question_result_query,
-                                    (
-                                        str(grading_result.result_id),
-                                        str(question_result.question_id),
-                                        str(question_result.answer_id),
-                                        question_result.is_correct,
-                                        question_result.score,
-                                        question_result.max_score,
-                                        question_result.grading_method.value,
-                                        question_result.scoring_comment,
-                                        question_result.confidence_score,
-                                        question_result.created_at,
-                                        question_result.created_at,  # updated_at도 동일하게 설정
-                                    ),
-                                )
+                await conn.commit()  # 트랜잭션 커밋
+                
+                logger.info(
+                    "채점 결과 저장 성공",
+                    result_id=str(grading_result.result_id),
+                    submission_id=str(grading_result.submission_id),
+                    total_score=grading_result.total_score,
+                    question_count=len(grading_result.question_results),
+                )
 
-                    logger.info(
-                        "채점 결과 저장 성공",
-                        result_id=str(grading_result.result_id),
-                        submission_id=str(grading_result.submission_id),
-                        total_score=grading_result.total_score,
-                        question_count=len(grading_result.question_results),
-                    )
+                return True
 
-                    return True
-
-                except Exception as e:
-                    logger.error(
-                        "채점 결과 저장 실패",
-                        result_id=str(grading_result.result_id),
-                        submission_id=str(grading_result.submission_id),
-                        error=str(e),
-                    )
-                    # 트랜잭션 자동 롤백됨
-                    return False
+            except Exception as e:
+                await conn.rollback()  # 트랜잭션 롤백
+                logger.error(
+                    "채점 결과 저장 실패",
+                    result_id=str(grading_result.result_id),
+                    submission_id=str(grading_result.submission_id),
+                    error=str(e),
+                )
+                return False
 
     async def get_grading_result_by_submission_id(
         self, submission_id: UUID
