@@ -343,15 +343,13 @@ class MySQLExamRepository(ExamRepositoryInterface):
                 # submitted_at 지정, total_score는 NULL 기본값 사용
                 await cursor.execute(
                     """
-                    INSERT INTO exam_submission (id, exam_id, student_id, student_name, student_phone, submitted_at)
-                    VALUES (%s, %s, %s, %s, %s, NOW())
+                    INSERT INTO exam_submission (id, exam_id, student_id, submitted_at)
+                    VALUES (%s, %s, %s, NOW())
                     """,
                     (
                         uuid_to_binary(submission_id),
                         uuid_to_binary(exam_id),
                         student_id,
-                        (student_name or f"Student_{student_id}"),
-                        (student_phone or None),
                     ),
                 )
                 await conn.commit()
