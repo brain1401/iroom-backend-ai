@@ -77,22 +77,76 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Setup error handlers (should be last)
     setup_error_handlers(app, settings)
     
-    # Startup event handler for background tasks
+    # Startup event handler for environment detection and background tasks
     @app.on_event("startup")
     async def startup_event():
-        """앱 시작 시 백그라운드 작업 시작"""
+        """앱 시작 시 환경 감지 및 백그라운드 작업 시작"""
         import asyncio
+        import structlog
         from app.routes.text_recognition import _start_polling_background_task
         
-        # 폴링 백그라운드 작업 시작
+        logger = structlog.get_logger("startup")
+        
+        # 1. Vertex AI vs Gemini API 환경 감지 및 출력
+        try:
+            from google.auth import default
+            from google.auth.exceptions import DefaultCredentialsError
+            
+            print("=" * 70)
+            print("🚀 Gemini AI Backend Server 시작")
+            print("=" * 70)
+            
+            # Vertex AI 인증 상태 확인
+            try:
+                
+                _, project_id = default()
+                
+                print("✅ 인증 환경: Vertex AI (Application Default Credentials)")
+                print(f"📍 GCP 프로젝트: {project_id or settings.gcp_project_id}")
+                print(f"📍 지역: {settings.gcp_location}")
+                print(f"🤖 모델: {settings.gemini_model}")
+                print("🔐 인증 방식: OAuth2 (ADC)")
+                
+                if project_id != settings.gcp_project_id:
+                    print(f"⚠️  주의: ADC 프로젝트({project_id})와 설정 프로젝트({settings.gcp_project_id})가 다름")
+                
+                # 실제 모델 인스턴스 생성 테스트
+                from app.utils.text_recognition_core import create_gemini_vision_model
+                create_gemini_vision_model()
+                print("✅ Vertex AI Gemini 모델 인스턴스 생성 성공")
+                
+                logger.info(
+                    "Vertex AI 환경으로 시작", 
+                    project=project_id, 
+                    location=settings.gcp_location,
+                    model=settings.gemini_model
+                )
+                
+            except DefaultCredentialsError:
+                print("❌ 인증 환경: Vertex AI 인증 실패")
+                print("🔧 해결 방법: gcloud auth application-default login")
+                print("📖 또는 GOOGLE_APPLICATION_CREDENTIALS 환경변수 설정")
+                
+                # Deprecated API key 확인
+                if settings.gemini_api_key:
+                    print("⚠️  Gemini API Key가 설정되어 있지만 사용되지 않음 (Deprecated)")
+                else:
+                    print("💡 권장: Vertex AI OAuth2 인증 사용")
+                
+                logger.error("Vertex AI 인증 실패 - ADC 설정 필요")
+                
+        except Exception as auth_error:
+            print(f"❌ 환경 감지 오류: {auth_error}")
+            logger.error("환경 감지 실패", error=str(auth_error))
+        
+        print("=" * 70)
+        print()
+        
+        # 2. 폴링 백그라운드 작업 시작
         try:
             asyncio.create_task(_start_polling_background_task())
-            import structlog
-            logger = structlog.get_logger("startup")
             logger.info("비동기 글자인식 폴링 백그라운드 작업 시작")
         except Exception as e:
-            import structlog
-            logger = structlog.get_logger("startup")
             logger.error("폴링 백그라운드 작업 시작 실패", error=str(e))
 
     # Customize OpenAPI schema with security and error responses

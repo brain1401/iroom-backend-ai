@@ -62,10 +62,8 @@ async def grading_health_check():
     else:
         health_status["database_status"] = "in-memory mode"
 
-    # Gemini API 키 확인
-    if not settings.gemini_api_key:
-        health_status["status"] = "unhealthy"
-        health_status["error"] = "Gemini API key not configured"
+    # Vertex AI 인증 확인 (ADC 기반)
+    # gcloud auth application-default login 또는 서비스 계정으로 인증됨
 
     return health_status
 

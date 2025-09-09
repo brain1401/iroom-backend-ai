@@ -21,7 +21,7 @@ from fastapi import APIRouter, File, UploadFile, HTTPException, Depends, Backgro
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 import structlog
-import httpx
+
 
 
 from app.config.settings import Settings, get_settings
@@ -206,77 +206,47 @@ async def _send_callback_with_retry(
     retry_delay: float = 2.0,
 ) -> bool:
     """
-    콜백 전송 (재시도 로직 포함)
+    콜백 전송 (비활성화됨 - 로깅만 수행)
+    
+    callback_url은 요청 데이터로 받지만 실제 HTTP 전송은 수행하지 않음
     
     Args:
         job_id: 작업 ID
-        callback_url: 콜백 URL
-        callback_data: 전송할 데이터
-        max_retries: 최대 재시도 횟수
-        retry_delay: 재시도 간격 (초)
+        callback_url: 콜백 URL (처리하지 않음)
+        callback_data: 전송할 데이터 (로깅용으로만 사용)
+        max_retries: 최대 재시도 횟수 (사용되지 않음)
+        retry_delay: 재시도 간격 (사용되지 않음)
     
     Returns:
-        bool: 전송 성공 여부
+        bool: 항상 True 반환 (콜백 비활성화됨)
     """
-    for attempt in range(max_retries + 1):
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    callback_url,
-                    json=callback_data.model_dump(mode='json'),
-                    headers={
-                        "Content-Type": "application/json",
-                        "User-Agent": "iRoom-AI-Backend/1.0.0"
-                    }
-                )
-                
-                # 성공 응답 확인 (2xx)
-                if 200 <= response.status_code < 300:
-                    logger.info(
-                        "콜백 전송 성공",
-                        job_id=str(job_id),
-                        callback_url=callback_url,
-                        status_code=response.status_code,
-                        attempt=attempt + 1
-                    )
-                    return True
-                else:
-                    logger.warning(
-                        "콜백 전송 실패 - HTTP 오류",
-                        job_id=str(job_id),
-                        callback_url=callback_url,
-                        status_code=response.status_code,
-                        attempt=attempt + 1
-                    )
-                    
-        except httpx.RequestError as e:
-            logger.warning(
-                "콜백 전송 실패 - 네트워크 오류",
-                job_id=str(job_id),
-                callback_url=callback_url,
-                error=str(e),
-                attempt=attempt + 1
-            )
-        except Exception as e:
-            logger.error(
-                "콜백 전송 중 예상치 못한 오류",
-                job_id=str(job_id),
-                callback_url=callback_url,
-                error=str(e),
-                attempt=attempt + 1
-            )
-        
-        # 마지막 시도가 아니면 재시도 대기
-        if attempt < max_retries:
-            await asyncio.sleep(retry_delay * (2 ** attempt))  # 지수 백오프
-    
-    logger.error(
-        "콜백 전송 최종 실패",
+    # 콜백 전송을 수행하지 않고 로깅만 수행
+    logger.info(
+        "콜백 전송 비활성화됨 - 실제 HTTP 요청 수행하지 않음",
         job_id=str(job_id),
         callback_url=callback_url,
-        max_retries=max_retries
+        status=callback_data.status,
+        processing_time_ms=callback_data.processing_time_ms,
+        has_result=callback_data.result is not None,
+        has_error=callback_data.error is not None
     )
-    return False
+    
+    # 콜백 데이터 구조 로깅 (디버깅용)
+    logger.debug(
+        "콜백 데이터 상세 (전송되지 않음)",
+        job_id=str(job_id),
+        callback_data_summary={
+            "job_id": str(callback_data.job_id),
+            "status": callback_data.status,
+            "processing_time_ms": callback_data.processing_time_ms,
+            "result_available": callback_data.result is not None,
+            "error_available": callback_data.error is not None,
+            "completed_at": callback_data.completed_at.isoformat()
+        }
+    )
+    
+    # 항상 성공으로 처리 (실제 전송하지 않으므로)
+    return True
 
 async def _poll_pending_jobs():
     """
@@ -717,10 +687,7 @@ async def _process_single_item_with_fallback(
             process_text_recognition_with_gemini,
         )
 
-        if not settings.gemini_api_key:
-            raise HTTPException(status_code=503, detail="Gemini API key not configured")
-
-        model = create_gemini_vision_model(settings.gemini_api_key)
+        model = create_gemini_vision_model()
         ocr_result = await process_text_recognition_with_gemini(optimized_image, model)
 
         # 품질 평가
@@ -849,7 +816,6 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
 
     # 배치 글자인식 서비스 설정 (필요시 활성화)
     # batch_text_recognition_service = BatchTextRecognitionService(
-    #     gemini_api_key=settings.gemini_api_key or "",
     #     max_concurrent=5,
     #     rate_limit_per_minute=settings.rate_limit_requests_per_minute
     # )
@@ -907,12 +873,7 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
                 process_text_recognition_with_gemini,
             )
 
-            if not settings.gemini_api_key:
-                raise HTTPException(
-                    status_code=503, detail="Gemini API key not configured"
-                )
-
-            model = create_gemini_vision_model(settings.gemini_api_key)
+            model = create_gemini_vision_model()
             ocr_result = await process_text_recognition_with_gemini(image_data, model)
 
             # 품질 평가 (이미 최적화된 이미지라 가정)
@@ -1455,9 +1416,8 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
     async def text_recognition_health_check() -> JSONResponse:
         """글자인식 서비스 종합 헬스체크"""
         try:
-            # 기본 Gemini API 확인
-            if not settings.gemini_api_key:
-                raise Exception("Gemini API key not configured")
+            # Vertex AI 인증 확인 (ADC 기반)
+            # gcloud auth application-default login 또는 서비스 계정으로 인증됨
 
             # 서킷 브레이커 상태
             cb_metrics = gemini_circuit_breaker.get_metrics()

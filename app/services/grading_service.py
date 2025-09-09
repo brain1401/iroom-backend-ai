@@ -232,26 +232,26 @@ class SubjectiveGrader:
 
     def __init__(
         self,
-        gemini_api_key: str,
         model_name: str = "gemini-2.5-pro",
         max_concurrent: int = 3,
     ):
         """
         주관식 채점기 초기화
-
+        
+        Vertex AI OAuth2 인증을 사용하여 Gemini 모델에 접근
+        Application Default Credentials(ADC)를 통해 자동 인증 수행
+        
         Args:
-            gemini_api_key: Gemini API 키
             model_name: 사용할 Gemini 모델명
             max_concurrent: 최대 동시 처리 수
         """
-        self.gemini_api_key = gemini_api_key
         self.model_name = model_name
         self.max_concurrent = max_concurrent
         self.grading_method = GradingMethod.AI_ASSISTED
-
+        
         # 동시성 제어
         self.semaphore = asyncio.Semaphore(max_concurrent)
-
+        
         # Gemini 모델 (재사용)
         self._gemini_model = None
 
@@ -538,26 +538,25 @@ class GradingService:
     
     def __init__(
         self,
-        gemini_api_key: str,
         max_concurrent_subjective: int = 3,
     ):
         """
         채점 서비스 초기화
         
+        Vertex AI OAuth2 인증을 사용하여 Gemini 모델에 접근
+        Application Default Credentials(ADC)를 통해 자동 인증 수행
+        
         Args:
-            gemini_api_key: Gemini API 키
             max_concurrent_subjective: 주관식 동시 채점 최대 수
         """
         from app.config.settings import get_settings
         
-        self.gemini_api_key = gemini_api_key
         self.max_concurrent_subjective = max_concurrent_subjective
         self.settings = get_settings()
         
         # 채점기 인스턴스들
         self.mc_grader = MultipleChoiceGrader()
         self.subjective_grader = SubjectiveGrader(
-            gemini_api_key=gemini_api_key,
             max_concurrent=max_concurrent_subjective
         )
         

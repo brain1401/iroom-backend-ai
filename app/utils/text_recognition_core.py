@@ -54,22 +54,19 @@ def create_text_recognition_prompt() -> str:
     return get_simple_prompt()
 
 
-def create_gemini_vision_model(api_key: str | None = None) -> ChatVertexAI:
+def create_gemini_vision_model() -> ChatVertexAI:
     """
-    Gemini Vision 모델 생성
-
-    Args:
-        api_key: Gemini API 키
+    Vertex AI Gemini Vision 모델 생성 (OAuth2 인증)
+    
+    Application Default Credentials(ADC)를 사용하여 Vertex AI 인증 수행
+    gcloud auth application-default login 또는 서비스 계정으로 인증 필요
 
     Returns:
         ChatVertexAI: 구성된 Vertex AI Gemini Vision 모델
 
-    Raises:
-        HTTPException: API 키가 설정되지 않은 경우
+    Note:
+        API 키 불필요 - Vertex AI OAuth2 인증 사용
     """
-    if not api_key:
-        raise HTTPException(status_code=503, detail="Gemini API key not configured")
-
     from app.config.settings import get_settings
     settings = get_settings()
     return ChatVertexAI(

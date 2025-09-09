@@ -104,17 +104,16 @@ class GradingServiceFactory:
         """
         채점 서비스 인스턴스 생성
         
+        Vertex AI OAuth2 인증을 사용하여 채점 서비스 초기화
+        Application Default Credentials(ADC)를 통해 인증 수행
+        
         Args:
             settings: 애플리케이션 설정
             
         Returns:
             GradingService: 초기화된 채점 서비스
         """
-        if not settings.gemini_api_key:
-            raise ValueError("Gemini API key is required for grading service")
-        
         return GradingService(
-            gemini_api_key=settings.gemini_api_key,
             max_concurrent_subjective=settings.grading_max_concurrent_subjective
         )
 

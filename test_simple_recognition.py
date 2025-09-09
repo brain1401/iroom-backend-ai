@@ -27,9 +27,8 @@ async def test_simple_prompt():
     
     print("🚀 SIMPLE_KOREAN 프롬프트 테스트 시작...")
     
-    # Gemini 모델 생성
-    settings = get_settings()
-    model = create_gemini_vision_model(settings.gemini_api_key)
+    # Gemini 모델 생성 (Vertex AI OAuth2)
+    model = create_gemini_vision_model()
     
     # 글자 인식 수행
     result = await process_text_recognition_with_gemini(image_data, model)

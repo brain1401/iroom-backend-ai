@@ -99,19 +99,19 @@ class BatchTextRecognitionService:
 
     def __init__(
         self,
-        gemini_api_key: str,
         max_concurrent: int = 5,
         rate_limit_per_minute: int = 15,
     ):
         """
         배치 OCR 서비스 초기화
-
+        
+        Vertex AI OAuth2 인증을 사용하여 Gemini 모델에 접근
+        Application Default Credentials(ADC)를 통해 자동 인증 수행
+        
         Args:
-            gemini_api_key: Gemini API 키
             max_concurrent: 최대 동시 처리 수
             rate_limit_per_minute: 분당 요청 제한
         """
-        self.gemini_api_key = gemini_api_key
         self.max_concurrent = max_concurrent
         self.rate_limit_per_minute = rate_limit_per_minute
 

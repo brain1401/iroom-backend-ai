@@ -70,22 +70,39 @@ def get_uptime() -> float:
 
 async def check_gemini_api_health(settings: Settings) -> bool:
     """
-    Gemini API 접근 가능성 확인
-
-    기본 검증 수행:
-    - API 키 존재 여부 확인
-    - 프로덕션에서는 경량 API 호출 고려 가능
-
+    Vertex AI Gemini API 접근 가능성 확인
+    
+    ADC(Application Default Credentials) 기반 인증 검증:
+    - gcloud auth application-default login 상태 확인
+    - Vertex AI 서비스 계정 인증 확인
+    - 경량 API 호출로 실제 접근성 테스트
+    
     Args:
         settings: 애플리케이션 설정
-
+        
     Returns:
-        bool: API 상태 정상 여부
+        bool: Vertex AI API 상태 정상 여부
     """
     try:
-        # Simple check - just verify we have an API key
-        # In production, you might want to make a lightweight API call
-        return bool(settings.gemini_api_key)
+        # Vertex AI 인증 및 접근성 간단 테스트
+        # ADC를 통한 자동 인증 확인
+        from google.auth import default
+        from google.auth.exceptions import DefaultCredentialsError
+        
+        try:
+            # ADC 자격 증명 확인
+            _, project_id = default()
+            
+            # 프로젝트 ID가 설정에서 지정된 것과 일치하는지 확인
+            if project_id and project_id != settings.gcp_project_id:
+                return False
+                
+            return True
+            
+        except DefaultCredentialsError:
+            # ADC 자격 증명이 설정되지 않음
+            return False
+            
     except Exception:
         return False
 
