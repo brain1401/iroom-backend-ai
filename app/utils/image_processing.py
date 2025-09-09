@@ -92,6 +92,15 @@ def validate_image_file(image_data: bytes) -> Tuple[str, int, int]:
                     f"최소 해상도: {MIN_WIDTH}x{MIN_HEIGHT}"
                 )
             
+            # MPO 형식 경고 (iPhone 멀티 이미지)
+            if image_format == "MPO":
+                logger.warning(
+                    "MPO 형식 감지 (iPhone 멀티 이미지)",
+                    format=image_format,
+                    resolution=f"{width}x{height}",
+                    recommendation="JPEG 변환 권장"
+                )
+            
             logger.info(
                 "이미지 검증 완료",
                 format=image_format,
@@ -186,122 +195,219 @@ def encode_image_to_base64(image_data: bytes) -> str:
 
 
 def compress_image_to_target_size(
-    image_data: bytes, 
-    target_size_mb: float = 18.0,
+    image_data: bytes,
+    target_size_mb: float = 10.0,
     max_width: int = 2048,
-    max_height: int = 2048
+    max_height: int = 2048,
+    min_quality: int = 70
 ) -> bytes:
     """
-    목표 크기에 맞춰 이미지를 동적으로 압축
+    이미지를 목표 크기로 압축 (Pillow 최적화 v2.0)
     
-    CPU 집약적 작업으로 FastAPI의 스레드풀에서 실행됨
-    
-    압축 전략:
-    1. 해상도 최적화 (max_width x max_height 이하)
-    2. 품질 조절을 통한 목표 크기 달성 (이진 탐색)
-    3. JPEG 변환으로 파일 크기 최적화
+    Pillow best practices:
+    - thumbnail()로 효율적인 리사이징
+    - optimize=True로 파일 크기 최소화
+    - 이진 탐색으로 빠른 품질 수렴
+    - progressive=False로 빠른 로딩
     
     Args:
         image_data: 원본 이미지 데이터
-        target_size_mb: 목표 파일 크기 (MB)
-        max_width: 최대 너비
-        max_height: 최대 높이
+        target_size_mb: 목표 크기 (MB), 기본 10MB
+        max_width: 최대 너비 제한
+        max_height: 최대 높이 제한
+        min_quality: 최소 품질 (기본 70)
         
     Returns:
-        bytes: 압축된 이미지 데이터
+        압축된 이미지 데이터
     """
-    target_size_bytes = int(target_size_mb * 1024 * 1024)
-    original_size = len(image_data)
+    target_bytes = int(target_size_mb * 1024 * 1024)
+    current_size_mb = len(image_data) / (1024 * 1024)
+    
+    # 이미 목표 크기 이하면 원본 반환
+    if current_size_mb <= target_size_mb:
+        logger.info(
+            "압축 불필요 - 이미 목표 크기 이하",
+            current_mb=round(current_size_mb, 2),
+            target_mb=target_size_mb
+        )
+        return image_data
     
     try:
         with Image.open(io.BytesIO(image_data)) as img:
-            # RGB 모드로 변환 (JPEG 호환성)
+            # RGB 변환 (JPEG 호환성)
             if img.mode in ('RGBA', 'LA', 'P'):
-                # 투명도가 있는 경우 흰색 배경과 합성
-                background = Image.new('RGB', img.size, (255, 255, 255))
                 if img.mode == 'P':
                     img = img.convert('RGBA')
-                background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
+                    
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                if img.mode in ('RGBA', 'LA'):
+                    background.paste(img, mask=img.split()[-1])
+                else:
+                    background.paste(img)
                 img = background
             elif img.mode != 'RGB':
                 img = img.convert('RGB')
             
-            original_dimensions = img.size
-            
-            # 해상도 최적화 (필요시)
             width, height = img.size
+            
+            # 1단계: 해상도 조정 (필요시)
             if width > max_width or height > max_height:
-                # 종횡비 유지하며 축소
-                ratio = min(max_width / width, max_height / height)
-                new_width = int(width * ratio)
-                new_height = int(height * ratio)
-                img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                # thumbnail 메서드로 비율 유지 리사이징
+                img_resized = img.copy()
+                img_resized.thumbnail(
+                    (max_width, max_height),
+                    Image.Resampling.LANCZOS,
+                    reducing_gap=2.0  # 2단계 리사이징 최적화
+                )
                 
                 logger.info(
-                    "해상도 축소",
+                    "해상도 조정",
                     original=f"{width}x{height}",
-                    optimized=f"{new_width}x{new_height}",
-                    ratio=round(ratio, 3)
+                    resized=f"{img_resized.size[0]}x{img_resized.size[1]}"
                 )
+                img = img_resized
             
-            # 품질 조절을 통한 목표 크기 달성 (이진 탐색)
-            min_quality = 30
-            max_quality = 95
-            best_quality = min_quality
+            # 2단계: 품질 조정으로 목표 크기 달성
+            # 이진 탐색으로 최적 품질 찾기
+            low_quality = min_quality
+            high_quality = 95
+            best_quality = high_quality
+            best_data = None
             
-            for _ in range(10):  # 최대 10회 반복
-                current_quality = (min_quality + max_quality) // 2
+            # 초기 추정: 크기 비율로 품질 예측
+            size_ratio = target_size_mb / current_size_mb
+            if size_ratio < 0.5:
+                # 50% 이상 압축 필요
+                high_quality = 85
+                best_quality = 80
+            elif size_ratio < 0.7:
+                # 30% 압축 필요
+                best_quality = 90
+            
+            attempts = 0
+            max_attempts = 7  # 최대 시도 횟수
+            
+            while low_quality <= high_quality and attempts < max_attempts:
+                attempts += 1
+                mid_quality = (low_quality + high_quality) // 2
                 
-                # 현재 품질로 압축 테스트
-                temp_buffer = io.BytesIO()
-                img.save(temp_buffer, format='JPEG', quality=current_quality, optimize=True)
-                current_size = len(temp_buffer.getvalue())
+                # 압축 시도
+                output_buffer = io.BytesIO()
+                save_params = {
+                    'format': 'JPEG',
+                    'quality': mid_quality,
+                    'optimize': True,  # 파일 크기 최적화
+                    'progressive': False,  # 빠른 로딩
+                }
                 
-                if current_size <= target_size_bytes:
-                    # 목표 크기 달성 - 더 높은 품질 시도
-                    best_quality = current_quality
-                    min_quality = current_quality + 1
+                # 품질이 낮을수록 더 aggressive한 subsampling
+                if mid_quality < 85:
+                    save_params['subsampling'] = 2  # 4:2:0
                 else:
-                    # 목표 크기 초과 - 더 낮은 품질 시도
-                    max_quality = current_quality - 1
+                    save_params['subsampling'] = 1  # 4:2:2
                 
-                if min_quality > max_quality:
-                    break
+                img.save(output_buffer, **save_params)
+                compressed_data = output_buffer.getvalue()
+                compressed_size = len(compressed_data)
+                
+                logger.debug(
+                    f"압축 시도 {attempts}/{max_attempts}",
+                    quality=mid_quality,
+                    size_mb=round(compressed_size / (1024 * 1024), 2),
+                    target_mb=target_size_mb
+                )
+                
+                if compressed_size <= target_bytes:
+                    # 목표 크기 이하 - 더 높은 품질 시도
+                    best_data = compressed_data
+                    best_quality = mid_quality
+                    
+                    # 90% 이상 달성시 종료
+                    if compressed_size > target_bytes * 0.9:
+                        logger.info(
+                            "최적 품질 발견",
+                            quality=best_quality,
+                            size_mb=round(compressed_size / (1024 * 1024), 2)
+                        )
+                        break
+                    
+                    low_quality = mid_quality + 1
+                else:
+                    # 목표 크기 초과 - 품질 낮춤
+                    high_quality = mid_quality - 1
             
-            # 최적 품질로 최종 압축
-            output_buffer = io.BytesIO()
-            img.save(output_buffer, format='JPEG', quality=best_quality, optimize=True)
-            compressed_data = output_buffer.getvalue()
-            
-            # 결과 로깅
-            compression_ratio = len(compressed_data) / original_size
-            logger.info(
-                "동적 압축 완료",
-                original_size_mb=round(original_size / 1024 / 1024, 1),
-                compressed_size_mb=round(len(compressed_data) / 1024 / 1024, 1),
-                compression_ratio=round(compression_ratio, 3),
-                quality=best_quality,
-                original_dimensions=f"{original_dimensions[0]}x{original_dimensions[1]}",
-                final_dimensions=f"{img.size[0]}x{img.size[1]}",
-                target_achieved=len(compressed_data) <= target_size_bytes
-            )
-            
-            return compressed_data
-            
+            # 최종 결과
+            if best_data:
+                final_size_mb = len(best_data) / (1024 * 1024)
+                compression_ratio = len(best_data) / len(image_data)
+                
+                logger.info(
+                    "이미지 압축 성공",
+                    original_mb=round(current_size_mb, 2),
+                    final_mb=round(final_size_mb, 2),
+                    quality=best_quality,
+                    compression_ratio=round(compression_ratio, 3),
+                    attempts=attempts
+                )
+                return best_data
+            else:
+                # 목표 달성 실패 - 최소 품질로 재시도
+                output_buffer = io.BytesIO()
+                img.save(
+                    output_buffer,
+                    format='JPEG',
+                    quality=min_quality,
+                    optimize=True,
+                    progressive=False,
+                    subsampling=2  # 최대 압축
+                )
+                fallback_data = output_buffer.getvalue()
+                
+                logger.warning(
+                    "목표 크기 달성 실패 - 최소 품질 적용",
+                    quality=min_quality,
+                    size_mb=round(len(fallback_data) / (1024 * 1024), 2),
+                    target_mb=target_size_mb
+                )
+                return fallback_data
+                
     except Exception as e:
-        logger.error("동적 압축 실패", error=str(e))
-        raise
+        logger.error(
+            "이미지 압축 실패",
+            error=str(e),
+            original_size_mb=round(current_size_mb, 2)
+        )
+        # 실패시 원본 반환
+        return image_data
 
+
+def is_supported_format(format: str) -> bool:
+    """
+    Gemini API가 지원하는 이미지 형식인지 확인
+    
+    Args:
+        format: 이미지 형식 (JPEG, PNG, WebP, GIF 등)
+        
+    Returns:
+        지원 여부
+    """
+    supported_formats = {'JPEG', 'PNG', 'WEBP', 'GIF'}
+    return format.upper() in supported_formats
 
 def optimize_image_for_gemini(image_data: bytes) -> bytes:
     """
-    Gemini API 최적화를 위한 지능형 이미지 전처리
+    Gemini API 최적화를 위한 고성능 이미지 전처리 (v5.1 - 개선된 압축)
     
-    자동 압축 조건:
-    - 파일 크기 > 15MB 또는 해상도 > 3000x3000
+    Pillow best practices 적용:
+    - thumbnail() 메서드로 단계적 리사이징
+    - draft() 메서드로 JPEG 디코딩 최적화
+    - LANCZOS 필터로 고품질 리샘플링
+    - optimize=True로 파일 크기 최소화
     
-    일반 최적화 조건:
-    - 해상도 > 2048x2048
+    처리 정책:
+    - MPO/HEIC → JPEG 변환 (iPhone 호환성)
+    - 10MB 미만: 압축/리사이징 안 함
+    - 10MB 이상: 10MB로 압축 (해상도는 가능한 유지)
     
     Args:
         image_data: 원본 이미지 데이터
@@ -309,78 +415,256 @@ def optimize_image_for_gemini(image_data: bytes) -> bytes:
     Returns:
         bytes: 최적화된 이미지 데이터
     """
-    original_size_mb = len(image_data) / 1024 / 1024
+    original_size_mb = len(image_data) / (1024 * 1024)
     
-    # 이미지 크기와 해상도 확인
     try:
-        with Image.open(io.BytesIO(image_data)) as img:
-            width, height = img.size
-    except Exception as e:
-        logger.error("이미지 정보 읽기 실패", error=str(e))
-        return image_data
-    
-    # 자동 압축 조건 확인
-    needs_compression = (
-        original_size_mb > 15.0 or  # 15MB 초과
-        width > 3000 or height > 3000  # 고해상도
-    )
-    
-    if needs_compression:
-        logger.info(
-            "자동 압축 트리거",
-            original_size_mb=round(original_size_mb, 1),
-            resolution=f"{width}x{height}",
-            reason="size_limit" if original_size_mb > 15.0 else "high_resolution"
-        )
+        # BytesIO로 이미지 열기
+        img_buffer = io.BytesIO(image_data)
         
-        # CPU 집약적 압축 작업 (스레드풀에서 실행)
-        return compress_image_to_target_size(image_data, target_size_mb=18.0)
-    
-    # 기존 최적화 로직 (가벼운 처리)
-    try:
-        with Image.open(io.BytesIO(image_data)) as img:
-            # RGB 모드로 변환 (JPEG 호환성)
+        with Image.open(img_buffer) as img:
+            # JPEG인 경우 draft 모드로 빠른 디코딩 (10MB 초과시)
+            original_format = img.format
+            width, height = img.size
+            
+            if original_format == 'JPEG' and original_size_mb > 10.0:
+                # draft 모드로 대략적인 크기 조정 (JPEG 최적화)
+                img.draft('RGB', (4096, 4096))  # 더 큰 크기 유지
+                logger.debug(
+                    "JPEG draft 모드 적용",
+                    original=f"{width}x{height}",
+                    draft=f"{img.size[0]}x{img.size[1]}"
+                )
+            
+            # MPO 형식 처리 (iPhone 멀티 프레임)
+            format_needs_conversion = False
+            if original_format == 'MPO':
+                logger.warning(
+                    "MPO 형식 감지 - JPEG로 변환",
+                    resolution=f"{width}x{height}"
+                )
+                img.seek(0)  # 첫 프레임
+                img = img.copy()
+                format_needs_conversion = True
+            
+            # HEIC/HEIF 형식 처리
+            elif original_format in ['HEIC', 'HEIF']:
+                logger.warning(
+                    "HEIC/HEIF 형식 감지 - JPEG로 변환",
+                    original_format=original_format
+                )
+                format_needs_conversion = True
+            
+            # 미지원 형식 처리
+            elif original_format not in ['JPEG', 'PNG', 'WEBP', 'GIF']:
+                logger.warning(
+                    "미지원 형식 - JPEG로 변환",
+                    original_format=original_format or "UNKNOWN"
+                )
+                format_needs_conversion = True
+            
+            # RGB 모드 변환 (JPEG 호환성)
             if img.mode in ('RGBA', 'LA', 'P'):
-                # 투명도가 있는 경우 흰색 배경과 합성
-                background = Image.new('RGB', img.size, (255, 255, 255))
+                # 투명 배경을 흰색으로
                 if img.mode == 'P':
                     img = img.convert('RGBA')
-                background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
-                img = background
+                
+                if img.mode in ('RGBA', 'LA'):
+                    # 알파 채널이 있는 경우 흰색 배경과 합성
+                    background = Image.new('RGB', img.size, (255, 255, 255))
+                    # 알파 채널을 마스크로 사용
+                    background.paste(img, mask=img.split()[-1] if 'A' in img.mode else None)
+                    img = background
+                else:
+                    img = img.convert('RGB')
             elif img.mode != 'RGB':
                 img = img.convert('RGB')
             
-            # 해상도 최적화 (Gemini API 효율성)
-            width, height = img.size
-            if width > 2048 or height > 2048:
-                # 종횡비 유지하며 축소
-                ratio = min(2048 / width, 2048 / height)
-                new_width = int(width * ratio)
-                new_height = int(height * ratio)
-                img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                
-                logger.info(
-                    "기본 해상도 최적화",
-                    original=f"{width}x{height}",
-                    optimized=f"{new_width}x{new_height}",
-                    ratio=round(ratio, 3)
-                )
+            # 10MB 이하 처리
+            if original_size_mb <= 10.0:
+                if format_needs_conversion or original_format not in ['JPEG', 'PNG', 'WEBP', 'GIF']:
+                    # 형식 변환만 필요한 경우
+                    output_buffer = io.BytesIO()
+                    save_format = 'JPEG' if format_needs_conversion else original_format
+                    
+                    # 품질 설정
+                    save_kwargs = {
+                        'format': save_format,
+                        'optimize': True  # Pillow 최적화
+                    }
+                    
+                    if save_format == 'JPEG':
+                        save_kwargs['quality'] = 95
+                        save_kwargs['progressive'] = False  # 빠른 로딩
+                    
+                    img.save(output_buffer, **save_kwargs)
+                    optimized_data = output_buffer.getvalue()
+                    
+                    logger.info(
+                        "형식 변환 완료 (10MB 이하)",
+                        original_format=original_format,
+                        final_format=save_format,
+                        size_mb=round(len(optimized_data) / (1024 * 1024), 2)
+                    )
+                    return optimized_data
+                else:
+                    # 변환 불필요 - 원본 반환
+                    logger.info(
+                        "최적화 불필요 - 원본 유지",
+                        size_mb=round(original_size_mb, 2),
+                        format=original_format
+                    )
+                    return image_data
             
-            # JPEG로 저장 (품질 85% - 인식률과 파일크기 균형)
-            output_buffer = io.BytesIO()
-            img.save(output_buffer, format='JPEG', quality=85, optimize=True)
-            optimized_data = output_buffer.getvalue()
-            
-            compression_ratio = len(optimized_data) / len(image_data)
+            # 10MB 초과 - 압축 필요
             logger.info(
-                "기본 최적화 완료",
-                original_size_kb=len(image_data) // 1024,
-                optimized_size_kb=len(optimized_data) // 1024,
-                compression_ratio=round(compression_ratio, 3)
+                "대용량 이미지 압축 시작",
+                original_size_mb=round(original_size_mb, 2),
+                target_size_mb=10.0
             )
             
-            return optimized_data
+            # 단계별 압축 전략
+            # 1. 먼저 품질로만 압축 시도 (해상도 유지)
+            target_bytes = 10 * 1024 * 1024
+            
+            # 품질만 조정해서 압축 시도
+            output_buffer = io.BytesIO()
+            best_data = None
+            best_size = float('inf')
+            current_data: bytes = b''  # 타입 안전성을 위한 초기화
+            
+            # 높은 품질부터 시작
+            for quality in [95, 90, 85, 80, 75, 70]:
+                output_buffer.seek(0)
+                output_buffer.truncate()
+                
+                img.save(
+                    output_buffer,
+                    format='JPEG',
+                    quality=quality,
+                    optimize=True,
+                    progressive=False,
+                    subsampling=2 if quality < 85 else 1
+                )
+                
+                current_data = output_buffer.getvalue()
+                current_size = len(current_data)
+                
+                logger.debug(
+                    f"품질 압축 시도",
+                    quality=quality,
+                    size_mb=round(current_size / (1024 * 1024), 2)
+                )
+                
+                if current_size <= target_bytes:
+                    # 목표 달성
+                    best_data = current_data
+                    best_size = current_size
+                    
+                    if current_size > target_bytes * 0.7:
+                        # 70% 이상이면 충분
+                        logger.info(
+                            "품질 조정으로 목표 달성",
+                            quality=quality,
+                            size_mb=round(best_size / (1024 * 1024), 2)
+                        )
+                        return best_data
+                    # 더 높은 품질 시도 가능
+                else:
+                    # 목표 초과 - 리사이징 필요
+                    break
+            
+            # 2. 품질로만 안 되면 리사이징 + 품질 조정
+            if not best_data or best_size > target_bytes:
+                # 적절한 리사이즈 비율 계산
+                # 목표: 파일 크기를 10MB로 줄이기
+                size_ratio = target_bytes / len(image_data)
+                
+                # 리사이즈 비율 추정 (보수적으로)
+                # 파일 크기는 대략 픽셀 수에 비례
+                resize_ratio = min(1.0, (size_ratio * 2) ** 0.5)  # 보수적 추정
+                
+                # 최소 해상도 보장
+                max_dimension = max(width, height)
+                if max_dimension * resize_ratio < 2048:
+                    resize_ratio = 2048 / max_dimension
+                
+                # 최대 해상도 제한
+                if max_dimension * resize_ratio > 4096:
+                    resize_ratio = 4096 / max_dimension
+                
+                new_width = int(width * resize_ratio)
+                new_height = int(height * resize_ratio)
+                
+                logger.info(
+                    "리사이징 수행",
+                    original=f"{width}x{height}",
+                    resized=f"{new_width}x{new_height}",
+                    ratio=round(resize_ratio, 3)
+                )
+                
+                # 리사이징
+                img_resized = img.resize(
+                    (new_width, new_height),
+                    Image.Resampling.LANCZOS
+                )
+                
+                # 리사이징 후 품질 조정으로 미세 조정
+                for quality in [95, 90, 85, 80, 75]:
+                    output_buffer.seek(0)
+                    output_buffer.truncate()
+                    
+                    img_resized.save(
+                        output_buffer,
+                        format='JPEG',
+                        quality=quality,
+                        optimize=True,
+                        progressive=False,
+                        subsampling=2 if quality < 85 else 1
+                    )
+                    
+                    current_data = output_buffer.getvalue()
+                    current_size = len(current_data)
+                    
+                    logger.debug(
+                        f"리사이징 후 품질 조정",
+                        quality=quality,
+                        size_mb=round(current_size / (1024 * 1024), 2)
+                    )
+                    
+                    if current_size <= target_bytes:
+                        best_data = current_data
+                        best_size = current_size
+                        
+                        if current_size > target_bytes * 0.7:
+                            # 70% 이상이면 충분
+                            break
+                    else:
+                        # 이전 best_data 사용
+                        if best_data:
+                            break
+            
+            # 최종 결과
+            if best_data:
+                final_size_mb = best_size / (1024 * 1024)
+                logger.info(
+                    "이미지 압축 완료",
+                    original_size_mb=round(original_size_mb, 2),
+                    final_size_mb=round(final_size_mb, 2),
+                    compression_ratio=round(best_size / len(image_data), 3)
+                )
+                return best_data
+            else:
+                # 압축 실패시 최소 품질로 재시도
+                logger.warning(
+                    "목표 크기 달성 실패 - 최선의 결과 반환",
+                    size_mb=round(len(current_data) / (1024 * 1024), 2)
+                )
+                return current_data
             
     except Exception as e:
-        logger.warning("기본 최적화 실패, 원본 사용", error=str(e))
+        logger.error(
+            "이미지 최적화 실패",
+            error=str(e),
+            traceback=True
+        )
         return image_data

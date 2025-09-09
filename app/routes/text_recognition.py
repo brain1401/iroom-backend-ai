@@ -739,6 +739,18 @@ async def _process_single_item_with_fallback(
         response = TextRecognitionAnswerResponse(
             answers=ocr_result.answers, metadata=metadata
         )
+        
+        # 응답 검증 로깅
+        logger.info(
+            "글자인식 응답 생성 완료",
+            filename=filename,
+            image_hash=image_hash[:16],
+            answers_count=len(response.answers),
+            has_answers=len(response.answers) > 0,
+            processing_time_ms=processing_time_ms,
+            questions_detected=len(ocr_result.answers),
+            cache_will_save=use_cache and len(ocr_result.answers) > 0
+        )
 
         # 캐시 저장 (성공시에만)
         if use_cache and ocr_result.answers:
@@ -751,7 +763,10 @@ async def _process_single_item_with_fallback(
     async def text_recognition_fallback_function():
         """글자인식 폴백 함수"""
         logger.warning(
-            "글자인식 폴백 모드 실행", filename=filename, image_hash=image_hash[:16]
+            "글자인식 폴백 모드 실행 - 빈 답안 반환",
+            filename=filename,
+            image_hash=image_hash[:16],
+            reason="batch_processing_fallback"
         )
 
         processing_time_ms = int((time.time() - start_time) * 1000)
@@ -927,7 +942,11 @@ def create_text_recognition_router(settings: Settings) -> APIRouter:
 
         async def text_recognition_fallback_function():
             """글자인식 폴백 함수 (간단한 응답)"""
-            logger.warning("글자인식 폴백 모드 실행", image_hash=image_hash[:16])
+            logger.warning(
+                "글자인식 폴백 모드 실행 - 빈 답안 반환",
+                image_hash=image_hash[:16],
+                reason="main_route_fallback"
+            )
 
             processing_time_ms = int((time.time() - start_time) * 1000)
 
