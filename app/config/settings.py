@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     rate_limit_tokens_per_day: int = Field(
         default=10000000, description="일일 토큰 수 (Vertex AI 기준)"
     )
-    rate_limit_enabled: bool = Field(default=True, description="Rate Limiting 활성화")
+    rate_limit_enabled: bool = Field(default=False, description="Rate Limiting 비활성화됨")
 
     # Redis 구성 (분산 Rate Limiting용)
     redis_url: str = Field(

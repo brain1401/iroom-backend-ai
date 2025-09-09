@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 
 from app.config.settings import Settings, get_settings
 from app.middleware.cors import setup_cors
-from app.middleware.rate_limit import setup_rate_limiting
+# from app.middleware.rate_limit import setup_rate_limiting  # Rate limiting 비활성화
 from app.middleware.auth import setup_authentication
 from app.middleware.logging import setup_logging
 from app.routes.health import setup_health_routes
@@ -67,7 +67,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     setup_logging(app, settings)  # Should be first for request/response logging
     setup_cors(app, settings)
     setup_authentication(app, settings)
-    setup_rate_limiting(app, settings)
+    # setup_rate_limiting(app, settings)  # Rate limiting 완전 비활성화
 
     # Setup routes
     setup_health_routes(app, settings)
@@ -329,9 +329,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if "responses" in details:
 
 
-                    # Rate limiting이 활성화된 엔드포인트에 429 추가
-                    if settings.rate_limit_enabled and not path.startswith("/health/"):
-                        details["responses"]["429"] = error_responses["429"]
+                    # Rate limiting이 활성화된 엔드포인트에 429 추가 (현재 비활성화됨)
+                    # if settings.rate_limit_enabled and not path.startswith("/health/"):
+                    #     details["responses"]["429"] = error_responses["429"]
 
                     # 모든 엔드포인트에 500 추가
                     details["responses"]["500"] = error_responses["500"]
