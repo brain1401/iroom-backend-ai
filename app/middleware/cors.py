@@ -18,6 +18,16 @@ def setup_cors(app: FastAPI, settings: Settings) -> None:
         app: FastAPI application instance
         settings: Application settings
     """
+    # 디버그: 실제 CORS 설정값 확인
+    import structlog
+    logger = structlog.get_logger("cors")
+    logger.info(
+        "CORS 설정 적용",
+        allow_origins=settings.cors_origins,
+        allow_credentials=settings.cors_allow_credentials,
+        origins_count=len(settings.cors_origins)
+    )
+    
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

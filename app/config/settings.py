@@ -89,7 +89,19 @@ class Settings(BaseSettings):
     )
 
     # CORS 구성
-    cors_origins: list[str] = Field(default=["*"], description="허용된 CORS 오리진")
+    cors_origins: list[str] = Field(
+        default=[
+            "https://student.iroomclass.com",
+            "https://teacher.iroomclass.com", 
+            "https://iroomclass.com",
+            "http://student.iroomclass.com",  # 개발환경 지원
+            "http://teacher.iroomclass.com",   # 개발환경 지원
+            "http://iroomclass.com",           # 개발환경 지원
+            "http://localhost:3000",           # 로컬 개발환경
+            "http://localhost:5173",           # Vite 개발 서버
+        ],
+        description="허용된 CORS 오리진 (iRoom 도메인만 허용)"
+    )
     cors_allow_credentials: bool = Field(default=True, description="CORS 자격증명 허용")
 
     # 인증 구성
