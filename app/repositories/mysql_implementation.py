@@ -289,8 +289,8 @@ class MySQLExamRepository(ExamRepositoryInterface):
             async with conn.cursor() as cursor:
                 await cursor.execute(
                     """
-                    INSERT INTO exam_submission (id, exam_id, student_id, created_at, updated_at)
-                    VALUES (%s, %s, %s, NOW(), NOW())
+                    INSERT INTO exam_submission (id, exam_id, student_id)
+                    VALUES (%s, %s, %s)
                     """,
                     (uuid_to_binary(submission_id), uuid_to_binary(exam_id), student_id)
                 )
@@ -324,8 +324,8 @@ class MySQLExamRepository(ExamRepositoryInterface):
             async with conn.cursor() as cursor:
                 await cursor.execute(
                     """
-                    INSERT INTO student_answer_sheet (id, submission_id, student_name, created_at, updated_at)
-                    VALUES (%s, %s, %s, NOW(), NOW())
+                    INSERT INTO student_answer_sheet (id, submission_id, student_name)
+                    VALUES (%s, %s, %s)
                     """,
                     (uuid_to_binary(answer_sheet_id), uuid_to_binary(submission_id), student_name)
                 )
