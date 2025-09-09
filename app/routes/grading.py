@@ -106,7 +106,6 @@ async def submit_and_grade(
         {
             "exam_id": "018e3d5a-7b4c-7000-8000-000000000000",
             "student_id": 12345,
-            "student_name": "홍길동",
             "answers": [
                 {
                     "question_id": "018e3d5a-7b4c-7000-8000-000000000001",
@@ -189,8 +188,9 @@ async def submit_and_grade(
         )
 
         # 5. student_answer_sheet 생성
+        # student_name을 student_id로부터 자동 생성
         answer_sheet_id = await exam_repo.create_answer_sheet(
-            submission_id=submission_id, student_name=request.student_name
+            submission_id=submission_id, student_name=f"Student_{request.student_id}"
         )
 
         # 6. student_answer_sheet_question 생성

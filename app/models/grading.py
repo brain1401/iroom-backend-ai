@@ -433,9 +433,7 @@ class SubmissionAndGradingRequest(BaseModel):
     - grading_options: 채점 옵션
     """
     exam_id: UUID = Field(..., description="시험 고유 ID")
-    student_id: int = Field(..., gt=0, description="학생 ID (숫자)" )
-    student_name: str = Field(..., min_length=1, max_length=100, description="학생 이름")
-    student_phone: str = Field(..., min_length=1, max_length=20, description="학생 전화번호")
+    student_id: int = Field(..., gt=0, description="학생 ID (숫자)")
     answers: list[AnswerSubmission] = Field(
         ..., 
         min_length=1, 
@@ -453,8 +451,6 @@ class SubmissionAndGradingRequest(BaseModel):
             "example": {
                 "exam_id": "018e3d5a-7b4c-7000-8000-000000000000",
                 "student_id": 12345,
-                "student_name": "홍길동",
-                "student_phone": "010-1234-5678",
                 "answers": [
                     {
                         "question_id": "018e3d5a-7b4c-7000-8000-000000000001",
@@ -470,7 +466,6 @@ class SubmissionAndGradingRequest(BaseModel):
             }
         }
     }
-
 
 class SubmissionAndGradingResponse(BaseModel):
     """

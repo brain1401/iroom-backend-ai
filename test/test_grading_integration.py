@@ -146,7 +146,7 @@ def sample_answer_sheet(sample_student_answer_sheet_id, sample_submission_id):
     return StudentAnswerSheet(
         id=sample_student_answer_sheet_id,
         submission_id=sample_submission_id,
-        student_name="김학생"
+
     )
 
 

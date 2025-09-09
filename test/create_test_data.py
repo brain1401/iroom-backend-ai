@@ -134,7 +134,7 @@ async def create_test_data():
     answer_sheet = StudentAnswerSheet(
         id=student_answer_sheet_id,
         submission_id=submission_id,
-        student_name="테스트학생"
+
     )
     exam_repo.storage.student_answer_sheets[answer_sheet.id] = answer_sheet
     
@@ -188,7 +188,7 @@ async def create_test_data():
         "exam_sheet_id": str(exam_sheet_id),
         "question_count": len(questions),
         "answer_count": len(student_answers),
-        "student_name": "테스트학생",
+
         "student_id": 123456,
     }
 
