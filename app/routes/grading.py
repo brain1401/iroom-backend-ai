@@ -8,12 +8,11 @@
 - GET /grading/health - 채점 시스템 헬스체크
 """
 
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends
 import structlog
 
 from app.config.settings import Settings, get_settings
 from app.models.grading import (
-    ExamGradingResult,
     SubmissionAndGradingRequest,
     SubmissionAndGradingResponse,
 )
@@ -74,7 +73,6 @@ async def grading_health_check():
 @router.post("/submit-and-grade", response_model=SubmissionAndGradingResponse)
 async def submit_and_grade(
     request: SubmissionAndGradingRequest,
-    background_tasks: BackgroundTasks = BackgroundTasks(),
     settings: Settings = Depends(get_settings),
 ) -> SubmissionAndGradingResponse:
     """
@@ -179,19 +177,66 @@ async def submit_and_grade(
         # 3. 제출 데이터 생성 (UUIDv7 사용)
         submission_id = generate_uuidv7()
         answer_sheet_id = generate_uuidv7()
+        
+        logger.info(
+            "제출 데이터 준비 완료",
+            submission_id=str(submission_id),
+            answer_sheet_id=str(answer_sheet_id)
+        )
 
         # 4. exam_submission 생성 (이름/전화번호 필수)
-        submission_id = await exam_repo.create_submission(
-            exam_id=request.exam_id,
-            student_id=request.student_id,
-            submission_id=submission_id,
-        )
+        try:
+            logger.info(
+                "exam_submission 생성 시작",
+                exam_id=str(request.exam_id),
+                student_id=request.student_id
+            )
+            
+            submission_id = await exam_repo.create_submission(
+                exam_id=request.exam_id,
+                student_id=request.student_id,
+                submission_id=submission_id,
+            )
+            
+            logger.info(
+                "exam_submission 생성 성공",
+                submission_id=str(submission_id)
+            )
+        except Exception as e:
+            logger.error(
+                "exam_submission 생성 실패",
+                exam_id=str(request.exam_id),
+                student_id=request.student_id,
+                error=str(e),
+                error_type=type(e).__name__
+            )
+            raise
 
         # 5. student_answer_sheet 생성
         # student_name을 student_id로부터 자동 생성
-        answer_sheet_id = await exam_repo.create_answer_sheet(
-            submission_id=submission_id, student_name=f"Student_{request.student_id}"
-        )
+        try:
+            logger.info(
+                "student_answer_sheet 생성 시작",
+                submission_id=str(submission_id),
+                student_name=f"Student_{request.student_id}"
+            )
+            
+            answer_sheet_id = await exam_repo.create_answer_sheet(
+                submission_id=submission_id, student_name=f"Student_{request.student_id}"
+            )
+            
+            logger.info(
+                "student_answer_sheet 생성 성공",
+                answer_sheet_id=str(answer_sheet_id)
+            )
+        except Exception as e:
+            logger.error(
+                "student_answer_sheet 생성 실패",
+                submission_id=str(submission_id),
+                error=str(e),
+                error_type=type(e).__name__
+            )
+            raise
 
         # 6. student_answer_sheet_question 생성
         answer_dicts = []
@@ -202,22 +247,56 @@ async def submit_and_grade(
                 "student_answer_sheet_id": answer_sheet_id,
                 "answer_text": answer.answer_text,
                 "selected_choice": answer.selected_choice,
-                "answer_image_url": answer.answer_image_url,
+
             }
             answer_dicts.append(answer_dict)
 
-        await exam_repo.create_answer_sheet_questions(
-            answer_sheet_id=answer_sheet_id, answers=answer_dicts
-        )
+        try:
+            logger.info(
+                "student_answer_sheet_question 생성 시작",
+                answer_sheet_id=str(answer_sheet_id),
+                answer_count=len(answer_dicts)
+            )
+            
+            await exam_repo.create_answer_sheet_questions(
+                answer_sheet_id=answer_sheet_id, answers=answer_dicts
+            )
+            
+            logger.info(
+                "student_answer_sheet_question 생성 성공",
+                answer_count=len(answer_dicts)
+            )
+        except Exception as e:
+            logger.error(
+                "student_answer_sheet_question 생성 실패",
+                answer_sheet_id=str(answer_sheet_id),
+                error=str(e),
+                error_type=type(e).__name__
+            )
+            raise
 
         # 7. 채점 수행 (force_grading=true인 경우)
         grading_result = None
         status = "SUBMITTED"
         message = "답안이 성공적으로 제출되었습니다"
 
+        logger.info(
+            "force_grading 플래그 확인",
+            force_grading=request.force_grading,
+            submission_id=str(submission_id)
+        )
+
         if request.force_grading:
+            logger.info(
+                "force_grading=True, 채점 프로세스 시작",
+                submission_id=str(submission_id),
+                question_count=len(questions),
+                answer_count=len(answer_dicts)
+            )
+            
             try:
                 # StudentAnswerSheetQuestion 객체 생성
+                logger.info("StudentAnswerSheetQuestion 객체 생성 시작")
                 student_answers = [
                     StudentAnswerSheetQuestion(
                         id=ad["id"],
@@ -225,14 +304,27 @@ async def submit_and_grade(
                         student_answer_sheet_id=ad["student_answer_sheet_id"],
                         answer_text=ad["answer_text"],
                         selected_choice=ad["selected_choice"],
-                        answer_image_url=ad["answer_image_url"],
                     )
                     for ad in answer_dicts
                 ]
+                logger.info(
+                    "StudentAnswerSheetQuestion 객체 생성 완료",
+                    student_answer_count=len(student_answers)
+                )
 
                 # 채점 수행
+                logger.info(
+                    "grading_service.grade_exam 호출 시작",
+                    submission_id=str(submission_id)
+                )
                 grading_result = await grading_service.grade_exam(
                     questions=questions, student_answers=student_answers
+                )
+                logger.info(
+                    "grading_service.grade_exam 호출 완료",
+                    submission_id=str(submission_id),
+                    grading_result_exists=grading_result is not None,
+                    total_score=grading_result.total_score if grading_result else None
                 )
 
                 # 채점 결과에 필요한 ID 설정
@@ -242,17 +334,40 @@ async def submit_and_grade(
                 grading_result.status = GradingStatus.COMPLETED
                 grading_result.graded_at = datetime.now()
 
-                # 채점 결과 저장 (백그라운드)
-                background_tasks.add_task(
-                    _save_grading_result_background, grading_repo, grading_result
+                # 채점 결과 저장 (동기 방식으로 변경 - DB 저장 완료 후 응답)
+                logger.info(
+                    "채점 결과 DB 저장 시작",
+                    result_id=str(grading_result.result_id),
+                    submission_id=str(submission_id),
+                    total_score=grading_result.total_score
                 )
-
-                status = "GRADED"
-                message = "답안이 제출되고 채점이 완료되었습니다"
+                
+                save_success = await grading_repo.save_grading_result(grading_result)
+                
+                if save_success:
+                    logger.info(
+                        "채점 결과 DB 저장 성공",
+                        result_id=str(grading_result.result_id),
+                        total_score=grading_result.total_score
+                    )
+                    status = "GRADED"
+                    message = "답안이 제출되고 채점이 완료되었습니다"
+                else:
+                    logger.error(
+                        "채점 결과 DB 저장 실패",
+                        result_id=str(grading_result.result_id)
+                    )
+                    status = "GRADED_BUT_NOT_SAVED"
+                    message = "채점은 완료되었으나 결과 저장에 실패했습니다"
 
             except Exception as e:
+                import traceback
                 logger.error(
-                    "채점 처리 실패", submission_id=str(submission_id), error=str(e)
+                    "채점 처리 실패",
+                    submission_id=str(submission_id),
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    traceback=traceback.format_exc()
                 )
                 status = "SUBMITTED_GRADING_FAILED"
                 message = f"답안은 제출되었으나 채점 중 오류가 발생했습니다: {str(e)}"
@@ -285,39 +400,6 @@ async def submit_and_grade(
         )
         raise HTTPException(
             status_code=500, detail=f"제출 처리 중 오류가 발생했습니다: {str(e)}"
-        )
-
-
-# 헬퍼 함수들
-
-
-async def _save_grading_result_background(
-    grading_repo, grading_result: ExamGradingResult
-):
-    """
-    백그라운드에서 채점 결과 저장
-
-    Args:
-        grading_repo: 채점 Repository
-        grading_result: 저장할 채점 결과
-    """
-    try:
-        success = await grading_repo.save_grading_result(grading_result)
-        if success:
-            logger.info(
-                "백그라운드 채점 결과 저장 성공",
-                result_id=str(grading_result.result_id),
-            )
-        else:
-            logger.error(
-                "백그라운드 채점 결과 저장 실패",
-                result_id=str(grading_result.result_id),
-            )
-    except Exception as e:
-        logger.error(
-            "백그라운드 채점 결과 저장 중 예외",
-            result_id=str(grading_result.result_id),
-            error=str(e),
         )
 
 

@@ -119,7 +119,7 @@ def sample_student_answers(sample_student_answer_sheet_id):
             student_answer_sheet_id=sample_student_answer_sheet_id,
             selected_choice=3,  # 정답
             answer_text=None,
-            answer_image_url=None,
+
         ),
         StudentAnswerSheetQuestion(
             id=UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
@@ -127,14 +127,14 @@ def sample_student_answers(sample_student_answer_sheet_id):
             student_answer_sheet_id=sample_student_answer_sheet_id,
             selected_choice=1,  # 오답
             answer_text=None,
-            answer_image_url=None,
+
         ),
         StudentAnswerSheetQuestion(
             id=UUID("cccccccc-cccc-cccc-cccc-cccccccccccc"),
             question_id=UUID("33333333-3333-3333-3333-333333333333"),
             student_answer_sheet_id=sample_student_answer_sheet_id,
             answer_text="무상태성과 일관된 인터페이스가 특징입니다.",
-            answer_image_url=None,
+
             selected_choice=None,
         ),
     ]
@@ -146,7 +146,7 @@ def sample_answer_sheet(sample_student_answer_sheet_id, sample_submission_id):
     return StudentAnswerSheet(
         id=sample_student_answer_sheet_id,
         submission_id=sample_submission_id,
-
+        student_name="Test Student"
     )
 
 

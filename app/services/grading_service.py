@@ -16,7 +16,7 @@ import time
 from decimal import Decimal
 from uuid import UUID, uuid4
 import structlog
-from langchain_google_vertexai import ChatVertexAI
+
 
 from app.models.grading import (
     QuestionData,
@@ -253,11 +253,12 @@ class SubjectiveGrader:
         self.semaphore = asyncio.Semaphore(max_concurrent)
 
         # Gemini 모델 (재사용)
-        self._gemini_model: ChatVertexAI | None = None
+        self._gemini_model = None
 
-    def _get_gemini_model(self) -> ChatVertexAI:
+    def _get_gemini_model(self):
         """Gemini 모델 인스턴스 생성/재사용"""
         if self._gemini_model is None:
+            from langchain_google_vertexai import ChatVertexAI
             from app.config.settings import get_settings
             settings = get_settings()
             self._gemini_model = ChatVertexAI(
@@ -580,6 +581,12 @@ class GradingService:
         Returns:
             ExamGradingResult: 통합 채점 결과
         """
+        logger.info(
+            "GradingService.grade_exam 진입",
+            question_count=len(questions) if questions else 0,
+            answer_count=len(student_answers) if student_answers else 0
+        )
+        
         if not questions:
             raise ValueError("채점할 문제가 없습니다")
         if not student_answers:
@@ -588,7 +595,9 @@ class GradingService:
         start_time = time.time()
         
         # 문제-답안 매칭
+        logger.info("문제-답안 매칭 시작")
         question_answer_pairs = self._match_questions_with_answers(questions, student_answers)
+        logger.info(f"문제-답안 매칭 완료: {len(question_answer_pairs)} 쌍")
         
         # 문제 유형별 그룹핑
         mc_pairs, subjective_pairs = self._group_by_question_type(question_answer_pairs)

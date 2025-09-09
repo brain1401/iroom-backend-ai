@@ -354,7 +354,7 @@ class InMemoryExamRepository(ExamRepositoryInterface):
                 student_answer_sheet_id=answer_sheet_id,
                 answer_text=answer_dict.get("answer_text"),
                 selected_choice=answer_dict.get("selected_choice"),
-                answer_image_url=answer_dict.get("answer_image_url")
+
             )
             
             self.storage.student_answers[answer_id] = answer_obj

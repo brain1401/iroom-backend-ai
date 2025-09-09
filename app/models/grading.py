@@ -111,7 +111,7 @@ class StudentAnswerSheetQuestion(BaseModel):
     question_id: UUID = Field(..., description="문제 ID")
     student_answer_sheet_id: UUID = Field(..., description="답안지 ID")
     answer_text: str | None = Field(default=None, max_length=1000, description="답안 텍스트")
-    answer_image_url: str | None = Field(default=None, max_length=500, description="답안 이미지 URL")
+
     selected_choice: int | None = Field(default=None, description="객관식 선택 답안")
 
 
@@ -401,7 +401,7 @@ class AnswerSubmission(BaseModel):
     question_id: UUID = Field(..., description="문제 고유 ID")
     answer_text: str | None = Field(default=None, max_length=1000, description="주관식 답안 텍스트")
     selected_choice: int | None = Field(default=None, ge=1, le=5, description="객관식 선택 번호 (1-5)")
-    answer_image_url: str | None = Field(default=None, max_length=500, description="답안 이미지 URL")
+
     
     model_config = {
         "json_schema_extra": {
